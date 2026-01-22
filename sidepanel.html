@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <style>
+    :root {
+      --quartzy-blue: #0099d8;
+      --quartzy-orange: #f1662a;
+      --bg-gray: #f9fafb;
+      --text-dark: #333;
+    }
+
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 20px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: var(--bg-gray);
+      color: var(--text-dark);
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .logo {
+      width: 32px;
+      height: 32px;
+    }
+
+    h2 {
+      font-size: 18px;
+      margin: 0;
+      color: #111;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: #e6f4ea;
+      color: #1e7e34;
+      font-size: 11px;
+      font-weight: bold;
+      margin-bottom: 20px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      border: 1px solid #eee;
+      margin-bottom: 20px;
+    }
+
+    button {
+      width: 100%;
+      background-color: var(--quartzy-blue);
+      color: white;
+      border: none;
+      padding: 12px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background-color: #007bb1;
+    }
+
+    button:active {
+      background-color: #005f87;
+    }
+
+    #resultArea {
+      margin-top: 20px;
+      display: none;
+    }
+
+    .data-label {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .data-value {
+      font-size: 16px;
+      font-weight: bold;
+      margin-bottom: 12px;
+    }
+
+    .divider {
+      height: 1px;
+      background: #eee;
+      margin: 12px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">
+    <img src="images/icon48.png" alt="Logo" class="logo">
+    <h2>Bridge Pilot</h2>
+  </div>
+
+  <span class="status-pill">&bull; ACTIVE</span>
+
+  <div id="fisher-view">
+    <div class="card">
+      <p style="font-size: 13px; margin-top: 0;">Navigate to a Fisher Scientific product page to begin.</p>
+      <button id="scrapeBtn">Scrape Page Data</button>
+    </div>
+  </div>
+
+  <div id="quartzy-view" style="display: none;">
+    <div class="card">
+      <p style="font-size: 13px; margin-top: 0; margin-bottom: 8px;">Enter Fisher Catalog Number:</p>
+      <input type="text" id="quartzyInput" placeholder="e.g. 07-200-571"
+        style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px;">
+      <button id="fetchBridgeBtn" style="background-color: var(--quartzy-orange);">Fetch Price (via Bridge)</button>
+      <p id="bridgeStatus" style="font-size: 11px; color: #666; margin-top: 8px; display:none;">Searching for open
+        Fisher tab...</p>
+    </div>
+  </div>
+
+  <div id="resultArea" class="card">
+    <div class="data-label">Catalog Number</div>
+    <div id="catNum" class="data-value">--</div>
+
+    <div class="divider"></div>
+
+    <div class="data-label">Price</div>
+    <div id="priceVal" class="data-value" style="color: var(--quartzy-orange);">--</div>
+
+    <button id="importBtn"
+      style="background-color: white; color: var(--quartzy-blue); border: 1px solid var(--quartzy-blue); margin-top: 10px;">
+      Request in Quartzy
+    </button>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+
+</html>
