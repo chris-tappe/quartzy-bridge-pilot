@@ -17,6 +17,8 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "UPDATE_SIDE_PANEL") {
     updateUI(message.data);
+  } else if (message.type === "QUARTZY_SELECTION_UPDATED") {
+    updateSelectedItemsUI(message.data);
   }
 });
 
@@ -40,6 +42,15 @@ async function updateViewMode() {
     quartzyView.style.display = 'block';
     statusPill.innerHTML = '&bull; BRIDGE MODE';
     statusPill.style.color = '#f1662a'; // Orange
+
+    // Fetch selection
+    try {
+      chrome.tabs.sendMessage(tab.id, { type: "GET_QUARTZY_SELECTION" }, (response) => {
+        if (response && response.success) {
+          updateSelectedItemsUI(response.data);
+        }
+      });
+    } catch (err) { /* ignore */ }
   } else {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'none';
@@ -108,77 +119,62 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 });
 
 
-// --- Fisher Manual Logic (Existing) ---
-// Fix the manual button with robust selectors matching content.js / vendors.json
-document.getElementById('scrapeBtn').addEventListener('click', async () => {
-  console.log("[SidePanel] Scrape button clicked.");
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) {
-      console.error("[SidePanel] No active tab found.");
-      return;
-    }
-    console.log(`[SidePanel] Target Tab: ${tab.id} (${tab.url})`);
-
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        console.log("[PageContext] Manual scrape triggered.");
-        // Re-run the core logic inside the tab with ALL selectors
-        const catNumSelectors = ['[itemprop="sku"]', '.product-catalog-number', '.cat-num', '#catalogNumber'];
-        const priceSelectors = ['#totalPrice', '.pdp-price', '.full-price', '[id^="price_"]'];
-
-        let catNum = "";
-        let price = "";
-
-        catNumSelectors.forEach(sel => {
-          const el = document.querySelector(sel);
-          if (el) {
-            console.log(`[PageContext] Found CatNum Candidate: ${sel} -> ${el.innerText}`);
-            if (el.innerText.trim()) catNum = el.innerText.replace('Catalog No. ', '').trim();
-          }
-        });
-
-        priceSelectors.forEach(sel => {
-          const el = document.querySelector(sel);
-          if (el) {
-            console.log(`[PageContext] Found Price Candidate: ${sel} -> ${el.innerText}`);
-            if (el.innerText.trim() && el.innerText.includes('$')) price = el.innerText.trim();
-          }
-        });
-
-        const result = { catalogNumber: catNum, price: price };
-        console.log("[PageContext] Returning result:", result);
-        return result;
-      }
-    }, (results) => {
-      if (chrome.runtime.lastError) {
-        console.error("[SidePanel] Script injection failed:", chrome.runtime.lastError.message);
-        return;
-      }
-      console.log("[SidePanel] Script results:", results);
-      if (results?.[0]?.result) {
-        updateUI(results[0].result);
-      } else {
-        console.warn("[SidePanel] No results returned from script.");
-      }
-    });
-  } catch (err) {
-    console.error("[SidePanel] Critical Error in Scrape Handler:", err);
-  }
-});
+// --- Manual Scrape Removed ---
 
 
 function updateUI(data) {
   const resultArea = document.getElementById('resultArea');
   if (!resultArea) return;
 
-  // Only update if we actually have something (even partial)
-  // or if we want to show "Not Found" state, we could handle that here.
-  // The original check required both, we'll keep it but be lenient on "--"
   if (data.catalogNumber || data.price) {
     resultArea.style.display = 'block';
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
     document.getElementById('priceVal').textContent = data.price || "--";
   }
+}
+
+// --- Bulk Transfer UI Logic ---
+
+let currentQuartzySelection = [];
+
+function updateSelectedItemsUI(items) {
+  currentQuartzySelection = items || [];
+  const listEl = document.getElementById('selectedItemsList');
+  const btn = document.getElementById('transferToFisherBtn');
+  if (!listEl || !btn) return;
+
+  if (currentQuartzySelection.length === 0) {
+    listEl.innerHTML = "Check boxes in Quartzy to see items here.";
+    btn.style.display = 'none';
+    return;
+  }
+
+  listEl.innerHTML = currentQuartzySelection.map(item =>
+    `<div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom: 4px; margin-bottom: 4px;">
+      <span><strong>Cat #:</strong> ${item.catalogNumber}</span>
+      <span><strong>Qty:</strong> ${item.quantity}</span>
+    </div>`
+  ).join('');
+
+  btn.style.display = 'block';
+  btn.innerText = `Transfer ${currentQuartzySelection.length} Item(s)`;
+}
+
+const transferBtnEl = document.getElementById('transferToFisherBtn');
+if (transferBtnEl) {
+  transferBtnEl.addEventListener('click', () => {
+    const statusMsg = document.getElementById('transferStatus');
+    if (currentQuartzySelection.length === 0) return;
+
+    statusMsg.style.display = 'block';
+    statusMsg.innerText = "Saving items to storage...";
+    statusMsg.style.color = "#666";
+
+    chrome.storage.local.set({ 'fisher_order_queue': currentQuartzySelection }, () => {
+      statusMsg.innerText = "Opening Fisher Rapid Order...";
+      chrome.tabs.create({ url: "https://www.fishersci.com/store1/rapidorder" }, () => {
+        statusMsg.style.display = 'none';
+      });
+    });
+  });
 }
