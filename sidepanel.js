@@ -142,11 +142,19 @@ function updateUI(data) {
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
     document.getElementById('priceVal').textContent = data.price || "--";
 
-    const itemNameEl = document.getElementById('itemNameVal');
-    if (itemNameEl) itemNameEl.textContent = data.itemName || "--";
+    const extraFields = document.getElementById('extraDataFields');
+    if (extraFields) {
+      if (data.itemName) {
+        extraFields.style.display = 'block';
+        const itemNameEl = document.getElementById('itemNameVal');
+        if (itemNameEl) itemNameEl.textContent = data.itemName || "--";
 
-    const unitSizeEl = document.getElementById('unitSizeVal');
-    if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
+        const unitSizeEl = document.getElementById('unitSizeVal');
+        if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
+      } else {
+        extraFields.style.display = 'none';
+      }
+    }
   }
 }
 
