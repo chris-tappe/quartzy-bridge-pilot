@@ -3,6 +3,26 @@ console.log("[Quartzy Bridge] Content Script Loaded");
 // Example: .../products/stripette.../07200574?crossRef... -> 07200574
 const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
 
+function extractUnitSize() {
+  const quantityBtn = document.querySelector('.attributeButton.Quantity.selected');
+  if (quantityBtn && quantityBtn.getAttribute('data-selector')) {
+    return quantityBtn.getAttribute('data-selector').trim();
+  }
+
+  const unitText = document.querySelector('span[itemprop="unitText"]');
+  if (unitText && unitText.innerText) return unitText.innerText.trim();
+
+  const webPriceDesc = Array.from(document.querySelectorAll('.webprice-container span')).find(
+    el => el.innerText && el.innerText.trim().startsWith('/')
+  );
+  if (webPriceDesc) return webPriceDesc.innerText.trim().replace(/^\/\s*/, '');
+
+  const packaging = document.querySelector('.packaging, .unit-size, [id*="unitSize"]');
+  if (packaging && packaging.innerText) return packaging.innerText.trim();
+
+  return "Each";
+}
+
 function run() {
   const url = window.location.href;
   const match = url.match(fisherUrlRegex);
@@ -62,7 +82,7 @@ function fetchPriceFromApi(catalogNumber) {
 
         const extras = {
           itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-          unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('span[itemprop="unitText"]')?.innerText?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
+          unitSize: extractUnitSize(),
           url: window.location.href,
         };
 
@@ -119,7 +139,7 @@ function scrapeFisherFallback() {
   if (catNum && price && price !== "$0.00") {
     const extras = {
       itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-      unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('span[itemprop="unitText"]')?.innerText?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
+      unitSize: extractUnitSize(),
       url: window.location.href,
     };
 
