@@ -25,6 +25,24 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://app.quartzy.com/*"
+      ],
+      "js": [
+        "quartzy_script.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://www.fishersci.com/store1/rapidorder*"
+      ],
+      "js": [
+        "fisher_script.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "icons": {
