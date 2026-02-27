@@ -62,7 +62,7 @@ function fetchPriceFromApi(catalogNumber) {
 
         const extras = {
           itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-          unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
+          unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('span[itemprop="unitText"]')?.innerText?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
           url: window.location.href,
         };
 
@@ -119,7 +119,7 @@ function scrapeFisherFallback() {
   if (catNum && price && price !== "$0.00") {
     const extras = {
       itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-      unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
+      unitSize: document.querySelector('.attributeButton.Quantity.selected')?.getAttribute('data-selector')?.trim() || document.querySelector('span[itemprop="unitText"]')?.innerText?.trim() || document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "Each",
       url: window.location.href,
     };
 
