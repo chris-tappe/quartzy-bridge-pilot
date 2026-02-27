@@ -60,9 +60,15 @@ function fetchPriceFromApi(catalogNumber) {
         const price = productData.totalPrice;
         console.log(`[Quartzy Bridge] API Price Found: ${price}`);
 
+        const extras = {
+          itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
+          unitSize: document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "1 Each",
+          url: window.location.href,
+        };
+
         chrome.runtime.sendMessage({
           type: "FISHER_DATA_FOUND",
-          data: { catalogNumber: catalogNumber, price: price }
+          data: { catalogNumber: catalogNumber, price: price, ...extras }
         });
       } else {
         console.warn(`[Quartzy Bridge] Price path unclear in API response.`, data);
@@ -111,9 +117,15 @@ function scrapeFisherFallback() {
   });
 
   if (catNum && price && price !== "$0.00") {
+    const extras = {
+      itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
+      unitSize: document.querySelector('.packaging, .unit-size, [id*="unitSize"]')?.innerText?.trim() || "1 Each",
+      url: window.location.href,
+    };
+
     chrome.runtime.sendMessage({
       type: "FISHER_DATA_FOUND",
-      data: { catalogNumber: catNum, price: price }
+      data: { catalogNumber: catNum, price: price, ...extras }
     });
   }
 }

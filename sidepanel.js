@@ -6,10 +6,16 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const savedData = result[`data_${tabId}`];
       if (savedData) {
         updateUI(savedData);
-        // Optional: clear the badge once the user sees it
         chrome.action.setBadgeText({ tabId: tabId, text: "" });
       }
     });
+  }
+});
+
+// Re-render the request list when storage changes
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && changes.saved_requests) {
+    renderSavedRequestsList();
   }
 });
 
@@ -63,6 +69,8 @@ async function updateViewMode() {
 updateViewMode();
 chrome.tabs.onActivated.addListener(updateViewMode);
 chrome.tabs.onUpdated.addListener(updateViewMode);
+
+renderSavedRequestsList();
 
 
 // --- Quartzy Bridge Logic ---
@@ -122,16 +130,115 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 // --- Manual Scrape Removed ---
 
 
+let currentFisherData = null;
+
 function updateUI(data) {
   const resultArea = document.getElementById('resultArea');
   if (!resultArea) return;
 
   if (data.catalogNumber || data.price) {
+    currentFisherData = data;
     resultArea.style.display = 'block';
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
     document.getElementById('priceVal').textContent = data.price || "--";
+
+    const itemNameEl = document.getElementById('itemNameVal');
+    if (itemNameEl) itemNameEl.textContent = data.itemName || "--";
+
+    const unitSizeEl = document.getElementById('unitSizeVal');
+    if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
   }
 }
+
+// --- List Building Logic ---
+document.getElementById('addToListBtn')?.addEventListener('click', () => {
+  if (!currentFisherData) return;
+
+  chrome.storage.local.get(['saved_requests'], (result) => {
+    const list = result.saved_requests || [];
+    list.push(currentFisherData);
+
+    chrome.storage.local.set({ saved_requests: list }, () => {
+      const status = document.getElementById('addToListStatus');
+      status.style.display = 'block';
+      setTimeout(() => status.style.display = 'none', 2000);
+    });
+  });
+});
+
+function renderSavedRequestsList() {
+  const container = document.getElementById('savedRequestsList');
+  const clearBtn = document.getElementById('clearListBtn');
+  if (!container) return;
+
+  chrome.storage.local.get(['saved_requests'], (result) => {
+    const list = result.saved_requests || [];
+
+    if (list.length === 0) {
+      container.innerHTML = 'No items added yet. Search Fisher and click "Add to Request List".';
+      if (clearBtn) clearBtn.style.display = 'none';
+      return;
+    }
+
+    if (clearBtn) clearBtn.style.display = 'block';
+
+    const COPY_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+
+    container.innerHTML = list.map((item, index) => `
+      <div style="border: 1px solid #ddd; background: #fff; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
+        <div style="font-weight: bold; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: flex-start;">
+           <span style="display:flex; align-items:flex-start;">
+             <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; display: inline-block;" title="${item.itemName}">${item.itemName || 'Unknown'}</span>
+             <button class="copy-btn copy-item" data-val="${item.itemName || ''}" title="Copy Name">${COPY_SVG}</button>
+           </span>
+           <button class="remove-item-btn" data-index="${index}" style="background: transparent; color: #cc0000; border: none; padding: 0; cursor: pointer; font-size: 14px; width: auto; margin-left: 8px;" title="Remove">&times;</button>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
+          <strong>Cat #:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.catalogNumber} <button class="copy-btn copy-item" data-val="${item.catalogNumber}" title="Copy">${COPY_SVG}</button></span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
+          <strong>Price:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.price} <button class="copy-btn copy-item" data-val="${item.price}" title="Copy">${COPY_SVG}</button></span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
+          <strong>Size:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.unitSize || '--'} <button class="copy-btn copy-item" data-val="${item.unitSize || ''}" title="Copy">${COPY_SVG}</button></span>
+        </div>
+        ${item.url ? `
+        <div style="display: flex; align-items: center; justify-content: flex-start; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px;">
+           <a href="${item.url}" target="_blank" style="color: #0055a4; text-decoration: none;">View on Fisher</a>
+           <button class="copy-btn copy-item" data-val="${item.url}" title="Copy Link">${COPY_SVG}</button>
+        </div>
+        ` : ''}
+      </div>
+    `).join('');
+
+    // Attach copy listeners
+    document.querySelectorAll('.copy-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const val = e.currentTarget.getAttribute('data-val');
+        navigator.clipboard.writeText(val).then(() => {
+          const originalHTML = e.currentTarget.innerHTML;
+          e.currentTarget.innerHTML = `<span style="color:#1e7e34; font-weight:bold;">&check;</span>`;
+          setTimeout(() => e.currentTarget.innerHTML = originalHTML, 1000);
+        });
+      });
+    });
+
+    // Attach remove listeners
+    document.querySelectorAll('.remove-item-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const index = parseInt(e.target.getAttribute('data-index'), 10);
+        list.splice(index, 1);
+        chrome.storage.local.set({ saved_requests: list });
+      });
+    });
+  });
+}
+
+document.getElementById('clearListBtn')?.addEventListener('click', () => {
+  if (confirm("Are you sure you want to clear your saved requests?")) {
+    chrome.storage.local.set({ saved_requests: [] });
+  }
+});
 
 // --- Bulk Transfer UI Logic ---
 
