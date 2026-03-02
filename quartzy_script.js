@@ -222,9 +222,20 @@ function getSelectedItems() {
         }
 
         // 2. Quantity
-        const qtyInput = row.querySelector('input[type="number"], input[name*="quantity"], input[name*="qty"]');
+        const qtyInput = row.querySelector('input[type="number"], input[name*="quantity"], input[name*="qty"], .quantity-input');
         if (qtyInput && qtyInput.value) {
             quantity = parseInt(qtyInput.value, 10);
+        } else {
+            // Fallback: Look for a cell that likely contains quantity (often a small number next to units)
+            const cells = Array.from(row.querySelectorAll('td'));
+            const qtyCell = cells.find(td => {
+                const text = td.innerText.trim();
+                return /^\d+$/.test(text) && parseInt(text, 10) < 1000; // Heuristic for quantity
+            });
+            if (qtyCell) {
+                quantity = parseInt(qtyCell.innerText.trim(), 10);
+                console.log(`   -> Found Qty (Cell Text): ${quantity}`);
+            }
         }
 
         itemsToTransfer.push({

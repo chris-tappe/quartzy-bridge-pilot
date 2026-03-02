@@ -55,7 +55,7 @@ async function updateViewMode() {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'block';
     if (resultArea) resultArea.style.display = 'none';
-    if (bulkTransfer) bulkTransfer.style.display = 'none';
+    // Let updateSelectedItemsUI handle bulkTransfer visibility
     statusPill.innerHTML = '&bull; BRIDGE MODE';
     statusPill.style.color = '#f1662a'; // Orange
 
@@ -284,13 +284,18 @@ function updateSelectedItemsUI(items) {
   currentQuartzySelection = items || [];
   const listEl = document.getElementById('selectedItemsList');
   const btn = document.getElementById('transferToFisherBtn');
+  const bulkCard = document.getElementById('bulkTransferCard');
   if (!listEl || !btn) return;
 
   if (currentQuartzySelection.length === 0) {
     listEl.innerHTML = "Check boxes in Quartzy to see items here.";
     btn.style.display = 'none';
+    if (bulkCard) bulkCard.style.display = 'none';
     return;
   }
+
+  // Show the card if we have items
+  if (bulkCard) bulkCard.style.display = 'block';
 
   listEl.innerHTML = currentQuartzySelection.map(item =>
     `<div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom: 4px; margin-bottom: 4px;">

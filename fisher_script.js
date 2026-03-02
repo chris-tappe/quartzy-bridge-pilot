@@ -43,14 +43,18 @@ function updateInputs(queue, startIndex = 0) {
     const catalogSelectors = [
         'input[name="shoppingCartCatNum"]',
         'input[class*="qa_catNumber"]',
-        'input[name*="shoppingCartCatNum"]'
+        'input[name*="shoppingCartCatNum"]',
+        'input[id^="catalogNumber"]',
+        '.qa_catNumber input'
     ];
 
     // Selectors for Quantity inputs
     const qtySelectors = [
         'input[name="shoppingCartQty"]',
         'input[class*="qa_item_qty_input"]',
-        'input[name*="shoppingCartQty"]'
+        'input[name*="shoppingCartQty"]',
+        'input[id^="quantity"]',
+        '.qa_item_qty_input input'
     ];
 
     const catalogInputs = Array.from(document.querySelectorAll(catalogSelectors.join(',')));
