@@ -4,21 +4,37 @@ console.log("[Quartzy Bridge] Content Script Loaded");
 const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
 
 function extractUnitSize() {
-  const quantityBtn = document.querySelector('.attributeButton.Quantity.selected');
-  if (quantityBtn && quantityBtn.getAttribute('data-selector')) {
-    return quantityBtn.getAttribute('data-selector').trim();
+  // 1. Try specific class mentioned by user
+  const unitString = document.querySelector('.unit_string');
+  if (unitString && unitString.innerText) {
+    return unitString.innerText.trim().replace(/^\/\s*/, '');
   }
 
-  const unitText = document.querySelector('span[itemprop="unitText"]');
-  if (unitText && unitText.innerText) return unitText.innerText.trim();
+  // 2. Try attribute button (common in some Fisher layouts)
+  const quantityBtn = document.querySelector('.attributeButton.Quantity.selected');
+  if (quantityBtn && quantityBtn.getAttribute('data-selector')) {
+    return quantityBtn.getAttribute('data-selector').trim().replace(/^\/\s*/, '');
+  }
 
+  // 3. Try standard unitText itemprop
+  const unitText = document.querySelector('span[itemprop="unitText"]');
+  if (unitText && unitText.innerText) {
+    return unitText.innerText.trim().replace(/^\/\s*/, '');
+  }
+
+  // 4. Try the webprice container (which often has the / prefix)
   const webPriceDesc = Array.from(document.querySelectorAll('.webprice-container span')).find(
     el => el.innerText && el.innerText.trim().startsWith('/')
   );
-  if (webPriceDesc) return webPriceDesc.innerText.trim().replace(/^\/\s*/, '');
+  if (webPriceDesc) {
+    return webPriceDesc.innerText.trim().replace(/^\/\s*/, '');
+  }
 
+  // 5. General matching
   const packaging = document.querySelector('.packaging, .unit-size, [id*="unitSize"]');
-  if (packaging && packaging.innerText) return packaging.innerText.trim();
+  if (packaging && packaging.innerText) {
+    return packaging.innerText.trim().replace(/^\/\s*/, '');
+  }
 
   return "Each";
 }
@@ -106,12 +122,13 @@ function fetchPriceFromApi(catalogNumber) {
 function scrapeFisherFallback() {
   // Expanded selectors based on common Fisher templates
   const catNumSelectors = [
+    '#qa_prod_code_labl',
     '[itemprop="sku"]',
     '.product-catalog-number',
     '.cat-num',
     '#catalogNumber',
     '.catalog-number',
-    'span.product-id' // Common in new layouts
+    'span.product-id'
   ];
   const priceSelectors = [
     '#totalPrice',

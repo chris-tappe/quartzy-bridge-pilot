@@ -20,9 +20,13 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 });
 
 // Listen for automated updates (live)
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === "UPDATE_SIDE_PANEL") {
-    updateUI(message.data);
+    // Only auto-update if we are actually viewing a Fisher tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url.includes("fishersci.com")) {
+      updateUI(message.data);
+    }
   } else if (message.type === "QUARTZY_SELECTION_UPDATED") {
     updateSelectedItemsUI(message.data);
   }
@@ -36,16 +40,22 @@ async function updateViewMode() {
 
   const fisherView = document.getElementById('fisher-view');
   const quartzyView = document.getElementById('quartzy-view');
+  const resultArea = document.getElementById('resultArea');
+  const bulkTransfer = document.getElementById('bulkTransferCard');
   const statusPill = document.querySelector('.status-pill');
 
   if (tab.url.includes("fishersci.com")) {
     fisherView.style.display = 'block';
     quartzyView.style.display = 'none';
+    if (bulkTransfer) bulkTransfer.style.display = 'none';
+    // Result area will show up via updateUI if scraping works
     statusPill.innerHTML = '&bull; ACTIVE (Fisher)';
     statusPill.style.color = '#1e7e34'; // Green
   } else if (tab.url.includes("quartzy.com")) {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'block';
+    if (resultArea) resultArea.style.display = 'none';
+    if (bulkTransfer) bulkTransfer.style.display = 'none';
     statusPill.innerHTML = '&bull; BRIDGE MODE';
     statusPill.style.color = '#f1662a'; // Orange
 
@@ -60,6 +70,8 @@ async function updateViewMode() {
   } else {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'none';
+    if (resultArea) resultArea.style.display = 'none';
+    if (bulkTransfer) bulkTransfer.style.display = 'none';
     statusPill.innerHTML = '&bull; IDLE';
     statusPill.style.color = '#666';
   }
@@ -216,6 +228,7 @@ function renderSavedRequestsList() {
            <button class="copy-btn copy-item" data-val="${item.url}" title="Copy Link">${COPY_SVG}</button>
         </div>
         ` : ''}
+        <button class="populate-item-btn" data-index="${index}" style="margin-top: 8px; width: 100%; padding: 4px; font-weight: bold; background-color: #f1662a; color: white; border: none; border-radius: 4px; cursor: pointer;">Populate Request</button>
       </div>
     `).join('');
 
@@ -239,13 +252,28 @@ function renderSavedRequestsList() {
         chrome.storage.local.set({ saved_requests: list });
       });
     });
+
+    // Attach populate listeners
+    document.querySelectorAll('.populate-item-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const index = parseInt(e.target.getAttribute('data-index'), 10);
+        const item = list[index];
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs.length === 0) return;
+          console.log("[Quartzy Bridge] Sending POPULATE_QUARTZY_REQUEST to tab:", tabs[0].id, item);
+          chrome.tabs.sendMessage(tabs[0].id, {
+            type: "POPULATE_QUARTZY_REQUEST",
+            data: item
+          });
+        });
+      });
+    });
   });
 }
 
 document.getElementById('clearListBtn')?.addEventListener('click', () => {
-  if (confirm("Are you sure you want to clear your saved requests?")) {
-    chrome.storage.local.set({ saved_requests: [] });
-  }
+  chrome.storage.local.set({ saved_requests: [] });
 });
 
 // --- Bulk Transfer UI Logic ---
