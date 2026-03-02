@@ -42,7 +42,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // Only trigger if URL changed and it's a Fisher product page
   // AND the page has finished loading (ensure content script is ready)
-  if (changeInfo.status === 'complete' && tab.url && tab.url.includes("fishersci.com/shop/products")) {
+  const isFisher = tab.url.includes("fishersci.com/shop/products");
+  const isVwr = tab.url.includes("vwr.com/store/product") || tab.url.includes("avantorsciences.com/us/en/product");
+
+  if (changeInfo.status === 'complete' && tab.url && (isFisher || isVwr)) {
     console.log(`[Background] Navigation complete on tab ${tabId}: ${tab.url}`);
 
     // Send message to Content Script to re-run scrape

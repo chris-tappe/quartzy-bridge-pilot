@@ -131,24 +131,35 @@
   <div id="fisher-view" style="display: none;">
   </div>
 
-  <div id="resultArea" class="card">
+  <div id="resultArea" class="card" style="display: none;">
     <div id="catNumSection">
       <div class="data-label">Catalog Number</div>
       <div id="catNum" class="data-value">--</div>
-      <div class="divider"></div>
     </div>
 
-    <div class="data-label">Price</div>
-    <div id="priceVal" class="data-value" style="color: var(--quartzy-orange);">--</div>
+    <div id="vendorPrices">
+      <!-- Fisher Result -->
+      <div id="fisherResult" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
+        <div class="data-label">Fisher Scientific Price</div>
+        <div id="fisherPriceVal" class="data-value" style="color: #0055a4; margin-bottom: 4px;">--</div>
+        <button id="addFisherToListBtn" class="populate-item-btn"
+          style="padding: 4px; font-size: 11px; width: auto; display: none;">Add to Request List</button>
+      </div>
 
-    <div id="extraDataFields">
+      <!-- VWR Result -->
+      <div id="vwrResult" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
+        <div class="data-label">VWR Price</div>
+        <div id="vwrPriceVal" class="data-value" style="color: #1e7e34; margin-bottom: 4px;">--</div>
+        <button id="addVwrToListBtn" class="populate-item-btn"
+          style="padding: 4px; font-size: 11px; width: auto; display: none;">Add to Request List</button>
+      </div>
+    </div>
+
+    <div id="extraDataFields" style="display: none;">
       <div class="divider"></div>
-
       <div class="data-label">Item Name</div>
       <div id="itemNameVal" class="data-value" style="font-size: 14px;">--</div>
-
       <div class="divider"></div>
-
       <div class="data-label">Unit Size</div>
       <div id="unitSizeVal" class="data-value" style="font-size: 14px;">--</div>
 

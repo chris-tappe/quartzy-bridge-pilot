@@ -24,7 +24,9 @@ chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === "UPDATE_SIDE_PANEL") {
     // Only auto-update if we are actually viewing a Fisher tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.url.includes("fishersci.com")) {
+    const isFisher = tab && tab.url.includes("fishersci.com");
+    const isVwr = tab && (tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com"));
+    if (isFisher || isVwr) {
       updateUI(message.data);
     }
   } else if (message.type === "QUARTZY_SELECTION_UPDATED") {
@@ -44,12 +46,12 @@ async function updateViewMode() {
   const bulkTransfer = document.getElementById('bulkTransferCard');
   const statusPill = document.querySelector('.status-pill');
 
-  if (tab.url.includes("fishersci.com")) {
+  if (tab.url.includes("fishersci.com") || tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com")) {
+    const isVwr = tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com");
     fisherView.style.display = 'block';
     quartzyView.style.display = 'none';
     if (bulkTransfer) bulkTransfer.style.display = 'none';
-    // Result area will show up via updateUI if scraping works
-    statusPill.innerHTML = '&bull; ACTIVE (Fisher)';
+    statusPill.innerHTML = `&bull; ACTIVE (${isVwr ? 'VWR' : 'Fisher Scientific'})`;
     statusPill.style.color = '#1e7e34'; // Green
   } else if (tab.url.includes("quartzy.com")) {
     fisherView.style.display = 'none';
@@ -98,45 +100,115 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   }
 
   // Reset UI
-  const resultArea = document.getElementById('resultArea');
-  resultArea.style.display = 'none';
+  document.getElementById('resultArea').style.display = 'none';
+  document.getElementById('fisherResult').style.display = 'none';
+  document.getElementById('vwrResult').style.display = 'none';
+  document.getElementById('extraDataFields').style.display = 'none';
+
   statusMsg.style.display = 'block';
-  statusMsg.innerText = "Locating Fisher tab...";
+  statusMsg.innerText = "Querying vendors...";
   statusMsg.style.color = "#666";
 
-  // 1. Find a Fisher Tab to use as proxy
-  const tabs = await chrome.tabs.query({ url: "*://*.fishersci.com/*" });
+  // 1. Find all relevant tabs
+  const fisherTabs = await chrome.tabs.query({ url: "*://*.fishersci.com/*" });
+  const vwrTabs = await chrome.tabs.query({ url: ["*://*.vwr.com/*", "*://*.avantorsciences.com/*"] });
 
-  if (tabs.length === 0) {
-    statusMsg.innerText = "Error: No open Fisher Scientific tab found. Please open one.";
+  if (fisherTabs.length === 0 && vwrTabs.length === 0) {
+    statusMsg.innerText = "Error: No open Fisher or VWR tabs found. Please open one.";
     statusMsg.style.color = "red";
     return;
   }
 
-  const proxyTab = tabs[0]; // Use the first one found
-  statusMsg.innerText = `Proxying via Fisher tab (ID: ${proxyTab.id})...`;
+  let resultsFound = 0;
+  let sharedExtras = null;
 
-  // 2. Send Message to that tab
-  chrome.tabs.sendMessage(proxyTab.id, {
-    type: "FETCH_PRICE_ON_DEMAND",
-    catalogNumber: catNum
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error(chrome.runtime.lastError);
-      statusMsg.innerText = "Error: Could not talk to Fisher tab. Reload it?";
-      statusMsg.style.color = "red";
-      return;
-    }
-
+  const handleResponse = (response) => {
     if (response && response.success) {
-      statusMsg.style.display = 'none';
-      updateUI(response.data);
-    } else {
-      statusMsg.innerText = "Error: " + (response?.error || "Unknown error");
-      statusMsg.style.color = "red";
+      resultsFound++;
+      if (response.vendor === "Fisher Scientific") {
+        const el = document.getElementById('fisherPriceVal');
+        if (el) el.textContent = response.data.price;
+        document.getElementById('fisherResult').style.display = 'block';
+        const addBtn = document.getElementById('addFisherToListBtn');
+        if (addBtn) {
+          addBtn.style.display = 'block';
+          addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
+        }
+      } else if (response.vendor === "VWR") {
+        const el = document.getElementById('vwrPriceVal');
+        if (el) el.textContent = response.data.price;
+        document.getElementById('vwrResult').style.display = 'block';
+        const addBtn = document.getElementById('addVwrToListBtn');
+        if (addBtn) {
+          addBtn.style.display = 'block';
+          addBtn.onclick = () => saveVendorItem(response.data, "VWR");
+        }
+
+        // Capture name/size for extras if not already present
+        if (!sharedExtras && response.data.itemName) {
+          sharedExtras = {
+            itemName: response.data.itemName,
+            unitSize: response.data.unitSize
+          };
+        }
+      }
+
+      if (resultsFound > 0) {
+        document.getElementById('resultArea').style.display = 'block';
+        document.getElementById('catNum').textContent = catNum;
+        statusMsg.style.display = 'none';
+
+        if (sharedExtras) {
+          document.getElementById('extraDataFields').style.display = 'block';
+          document.getElementById('itemNameVal').textContent = sharedExtras.itemName;
+          document.getElementById('unitSizeVal').textContent = sharedExtras.unitSize;
+        }
+      }
     }
-  });
+  };
+
+  // 2. Broadcast to one of each
+  if (fisherTabs.length > 0) {
+    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
+  }
+  if (vwrTabs.length > 0) {
+    chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
+  }
+
+  // Timeout if no results
+  setTimeout(() => {
+    if (resultsFound === 0 && statusMsg.style.display !== 'none') {
+      statusMsg.innerText = "No prices found for this catalog number.";
+      statusMsg.style.color = "orange";
+    }
+  }, 5000);
 });
+
+function saveVendorItem(itemData, vendorName) {
+  const fullData = {
+    ...itemData,
+    vendor: vendorName,
+    url: vendorName === "VWR" ? `https://us.vwr.com/store/search?label=${itemData.catalogNumber}` : `https://www.fishersci.com/shop/products/search?keyword=${itemData.catalogNumber}`
+  };
+
+  // Check if we have extras on the page
+  const nameEl = document.getElementById('itemNameVal');
+  if (nameEl && nameEl.textContent !== "--") fullData.itemName = nameEl.textContent;
+  const sizeEl = document.getElementById('unitSizeVal');
+  if (sizeEl && sizeEl.textContent !== "--") fullData.unitSize = sizeEl.textContent;
+
+  chrome.storage.local.get(['saved_requests'], (result) => {
+    const list = result.saved_requests || [];
+    list.push(fullData);
+    chrome.storage.local.set({ saved_requests: list }, () => {
+      const statusMsg = document.getElementById('bridgeStatus');
+      statusMsg.style.display = 'block';
+      statusMsg.innerText = `Added ${vendorName} item to list!`;
+      statusMsg.style.color = "#1e7e34";
+      setTimeout(() => statusMsg.style.display = 'none', 2000);
+    });
+  });
+}
 
 
 // --- Manual Scrape Removed ---
@@ -150,17 +222,32 @@ async function updateUI(data) {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const isQuartzy = tab && tab.url.includes("quartzy.com");
+  const isVwrOnTab = tab && (tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com"));
+  const isFisherOnTab = tab && tab.url.includes("fishersci.com");
 
   if (data.catalogNumber || data.price) {
     currentFisherData = data;
     resultArea.style.display = 'block';
 
-    // On Quartzy, we don't need to see the cat num (we just fetched it) or add to list (we have it)
+    // Reset vendor specific sections
+    // In vendor site view, only show the relevant vendor
+    document.getElementById('fisherResult').style.display = isFisherOnTab ? 'block' : 'none';
+    document.getElementById('vwrResult').style.display = isVwrOnTab ? 'block' : 'none';
+
+    // Hide specialized add buttons when on vendor site (the main addToListBtn is used)
+    document.getElementById('addFisherToListBtn').style.display = 'none';
+    document.getElementById('addVwrToListBtn').style.display = 'none';
+
+    // Update generic cat num
     const catSection = document.getElementById('catNumSection');
     if (catSection) catSection.style.display = isQuartzy ? 'none' : 'block';
-
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
-    document.getElementById('priceVal').textContent = data.price || "--";
+
+    if (isVwrOnTab) {
+      document.getElementById('vwrPriceVal').textContent = data.price || "--";
+    } else {
+      document.getElementById('fisherPriceVal').textContent = data.price || "--";
+    }
 
     const extraFields = document.getElementById('extraDataFields');
     if (extraFields) {
@@ -206,7 +293,7 @@ function renderSavedRequestsList() {
     const list = result.saved_requests || [];
 
     if (list.length === 0) {
-      container.innerHTML = 'No items added yet. Search Fisher and click "Add to Request List".';
+      container.innerHTML = 'No items added yet. Search Fisher/VWR and click "Add to Request List".';
       if (clearBtn) clearBtn.style.display = 'none';
       return;
     }
@@ -224,6 +311,7 @@ function renderSavedRequestsList() {
            </span>
            <button class="remove-item-btn" data-index="${index}" style="background: transparent; color: #cc0000; border: none; padding: 0; cursor: pointer; font-size: 14px; width: auto; margin-left: 8px;" title="Remove">&times;</button>
         </div>
+        <div style="font-size: 11px; color: #666; margin-bottom: 4px;"><strong>Vendor:</strong> ${item.vendor || 'Unknown'}</div>
         <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
           <strong>Cat #:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.catalogNumber} <button class="copy-btn copy-item" data-val="${item.catalogNumber}" title="Copy">${COPY_SVG}</button></span>
         </div>
@@ -235,7 +323,7 @@ function renderSavedRequestsList() {
         </div>
         ${item.url ? `
         <div style="display: flex; align-items: center; justify-content: flex-start; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px;">
-           <a href="${item.url}" target="_blank" style="color: #0055a4; text-decoration: none;">View on Fisher</a>
+           <a href="${item.url}" target="_blank" style="color: #0055a4; text-decoration: none;">View Item Page</a>
            <button class="copy-btn copy-item" data-val="${item.url}" title="Copy Link">${COPY_SVG}</button>
         </div>
         ` : ''}

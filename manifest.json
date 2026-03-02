@@ -19,7 +19,9 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.fishersci.com/*"
+        "*://*.fishersci.com/*",
+        "*://*.vwr.com/*",
+        "*://*.avantorsciences.com/*"
       ],
       "js": [
         "content.js"
@@ -60,5 +62,16 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "vwr_interceptor.js"
+      ],
+      "matches": [
+        "*://*.vwr.com/*",
+        "*://*.avantorsciences.com/*"
+      ]
+    }
+  ]
 }

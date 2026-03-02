@@ -2,9 +2,49 @@ console.log("[Quartzy Bridge] Content Script Loaded");
 // Regex to extract Fisher Catalog Number from URL (matches vendors.json)
 // Example: .../products/stripette.../07200574?crossRef... -> 07200574
 const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
+let vwrInterceptedData = null;
+
+// Inject the VWR Interceptor for network sniffing
+if (window.location.href.includes("vwr.com") || window.location.href.includes("avantorsciences.com")) {
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('vwr_interceptor.js');
+  (document.head || document.documentElement).appendChild(script);
+  script.onload = () => script.remove();
+}
+
+// Listen for intercepted data from the main world
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  if (event.data && event.data.type === "VWR_INTERCEPTED_DATA") {
+    console.log("[Quartzy Bridge] Received data from Interceptor:", event.data.data);
+    vwrInterceptedData = event.data.data;
+    scrapeVendorData(); // Trigger immediate update
+  }
+});
 
 function extractUnitSize() {
-  // 1. Try specific class mentioned by user
+  const url = window.location.href;
+  const isVwr = url.includes("vwr.com") || url.includes("avantorsciences.com");
+
+  if (isVwr) {
+    // 1. Check for selected buttons (modern layout)
+    const selectedBtn = document.querySelector('.option-button.selected');
+    if (selectedBtn) return selectedBtn.innerText.trim();
+
+    // 2. Check for UOM in the buy box/price area
+    const uomEl = document.querySelector('.selection-wrapper .selected, .select-options .selected');
+    if (uomEl) return uomEl.innerText.trim();
+
+    // 3. Fallback to desktop description parsing (legacy layout)
+    const desktopOnly = Array.from(document.querySelectorAll('.desktop-only, .font-bold.desktop-only, .unit-measure'));
+    const unitEl = desktopOnly.find(el => {
+      const txt = el.innerText.trim();
+      return txt && !txt.includes('$') && txt.length > 0 && txt.length < 30;
+    });
+    if (unitEl) return unitEl.innerText.trim();
+  }
+
+  // Fisher Specific logic
   const unitString = document.querySelector('.unit_string');
   if (unitString && unitString.innerText) {
     return unitString.innerText.trim().replace(/^\/\s*/, '');
@@ -41,6 +81,14 @@ function extractUnitSize() {
 
 function run() {
   const url = window.location.href;
+  const isVwr = url.includes("vwr.com") || url.includes("avantorsciences.com");
+
+  if (isVwr) {
+    console.log("[Quartzy Bridge] Detected VWR/Avantor. Start polling...");
+    startPolling();
+    return;
+  }
+
   const match = url.match(fisherUrlRegex);
 
   if (match && match[1]) {
@@ -100,6 +148,7 @@ function fetchPriceFromApi(catalogNumber) {
           itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
           unitSize: extractUnitSize(),
           url: window.location.href,
+          vendor: "Fisher Scientific"
         };
 
         chrome.runtime.sendMessage({
@@ -108,20 +157,23 @@ function fetchPriceFromApi(catalogNumber) {
         });
       } else {
         console.warn(`[Quartzy Bridge] Price path unclear in API response.`, data);
-        scrapeFisherFallback();
+        scrapeVendorData();
       }
     })
     .catch(err => {
       console.warn("[Quartzy Bridge] API POST Failed. Switching to Poll.", err);
-      scrapeFisherFallback();
+      scrapeVendorData();
     });
 }
 
 
 // Fallback Scraper with Expanded Selectors
-function scrapeFisherFallback() {
-  // Expanded selectors based on common Fisher templates
-  const catNumSelectors = [
+function scrapeVendorData() {
+  const url = window.location.href;
+  const isVwr = url.includes("vwr.com") || url.includes("avantorsciences.com");
+
+  // Expanded selectors based on common vendor templates
+  const catNumSelectors = isVwr ? ['.product-catalog-no', '.product-vendor-catalog-no', '#chemical-catlog-no'] : [
     '#qa_prod_code_labl',
     '[itemprop="sku"]',
     '.product-catalog-number',
@@ -130,7 +182,7 @@ function scrapeFisherFallback() {
     '.catalog-number',
     'span.product-id'
   ];
-  const priceSelectors = [
+  const priceSelectors = isVwr ? ['.price', '.font-bold.desktop-only'] : [
     '#totalPrice',
     '.pdp-price',
     '.full-price',
@@ -145,35 +197,62 @@ function scrapeFisherFallback() {
 
   catNumSelectors.forEach(sel => {
     const el = document.querySelector(sel);
-    if (el && el.innerText.trim()) catNum = el.innerText.replace('Catalog No. ', '').trim();
+    if (el && el.innerText.trim()) {
+      // Use regex to strip common prefixes
+      catNum = el.innerText.replace(/Catalog\s*(?:No\.?|#)\s*/i, '').trim();
+    }
   });
 
   priceSelectors.forEach(sel => {
-    const el = document.querySelector(sel);
-    if (el && el.innerText.trim() && el.innerText.includes('$')) price = el.innerText.trim();
+    // For VWR, we might find multiple prices in a table, we want the first valid one
+    const elements = document.querySelectorAll(sel);
+    for (const el of elements) {
+      const txt = el.innerText.trim();
+      // Look for a price that isn't $0.00
+      if (txt && txt.includes('$') && !txt.includes('$0.00')) {
+        price = txt;
+        break;
+      }
+    }
+    // Fallback: if we only found $0.00 and nothing else, but we have ANY price element
+    if (!price) {
+      for (const el of elements) {
+        const txt = el.innerText.trim();
+        if (txt && txt.includes('$')) {
+          price = txt;
+          break;
+        }
+      }
+    }
   });
+
+  if (vwrInterceptedData && isVwr) {
+    catNum = vwrInterceptedData.catalogNumber || catNum;
+    price = vwrInterceptedData.price || price;
+  }
 
   if (catNum && price && price !== "$0.00") {
     const extras = {
-      itemName: document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-      unitSize: extractUnitSize(),
+      itemName: (vwrInterceptedData?.itemName) || document.querySelector(isVwr ? '#pdp-product-heading, .product-name-title, .desc-header' : 'h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
+      unitSize: (vwrInterceptedData?.unitSize) || extractUnitSize(),
       url: window.location.href,
+      vendor: isVwr ? "VWR" : "Fisher Scientific"
     };
 
     chrome.runtime.sendMessage({
-      type: "FISHER_DATA_FOUND",
+      type: "FISHER_DATA_FOUND", // Message type remains for compatibility
       data: { catalogNumber: catNum, price: price, ...extras }
     });
   }
 }
 
 function startPolling() {
-  const observer = new MutationObserver(() => scrapeFisherFallback());
+  const observer = new MutationObserver(() => scrapeVendorData());
   observer.observe(document.body, { childList: true, subtree: true });
 
   let attempts = 0;
   const interval = setInterval(() => {
-    scrapeFisherFallback();
+    scrapeVendorData();
     if (attempts++ > 5) clearInterval(interval);
   }, 1000);
 }
@@ -186,60 +265,148 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "FETCH_PRICE_ON_DEMAND") {
-    console.log(`[Quartzy Bridge] Bridge Request received for: ${message.catalogNumber}`);
-
-    // We reuse the existing logic but need to handle the promise for sendResponse
-    // Note: fetchPriceFromApi is currently void. We need to adapt it slightly 
-    // OR just duplicate the fetch for the bridge to keep it simple.
-    // Let's use the exact same POST logic.
-
     const catalogNumber = message.catalogNumber;
-    const apiUrl = "https://www.fishersci.com/shop/products/service/pricing";
-    const body = new URLSearchParams();
-    body.append('partNumber', catalogNumber); // The API handles inputs like "07-200-571" fine usually, or we strip it.
-    body.append('callerId', 'products-ui-single-page');
+    const isVwr = window.location.href.includes("vwr.com") || window.location.href.includes("avantorsciences.com");
+    console.log(`[Quartzy Bridge] Bridge Request received for: ${catalogNumber} on ${isVwr ? 'VWR' : 'Fisher Scientific'}`);
 
-    fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Accept': 'application/json, text/javascript, */*; q=0.01'
-      },
-      body: body
-    })
-      .then(r => r.json())
-      .then(data => {
-        console.log("[Quartzy Bridge] Bridge API Response:", data);
-        // Response parsing logic (same as main function)
-        let productDataArray = data[catalogNumber] || data;
-
-        // Handle hyphen mismatch keying (e.g. key is "07200571" but input was "07-200-571")
-        if (!productDataArray) {
-          // Try stripping hyphens from key lookup
-          const cleanKey = catalogNumber.replace(/[^a-zA-Z0-9]/g, '');
-          productDataArray = data[cleanKey];
-        }
-
-        if (!Array.isArray(productDataArray) && data.priceAndAvailability) {
-          productDataArray = data.priceAndAvailability[catalogNumber] || data.priceAndAvailability[catalogNumber.replace(/[^a-zA-Z0-9]/g, '')];
-        }
-
-        const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
-
-        if (productData && productData.totalPrice) {
-          sendResponse({ success: true, data: { catalogNumber: catalogNumber, price: productData.totalPrice } });
-        } else {
-          sendResponse({ success: false, error: "Price not found in API response" });
-        }
-      })
-      .catch(err => {
-        console.error("Bridge Fetch Error:", err);
+    if (isVwr) {
+      // VWR Pricing Logic
+      fetchVwrPrice(catalogNumber).then(result => {
+        sendResponse(result);
+      }).catch(err => {
         sendResponse({ success: false, error: err.message });
       });
+      return true; // Keep channel open
+    } else {
+      // Fisher Pricing Logic (Existing)
+      const apiUrl = "https://www.fishersci.com/shop/products/service/pricing";
+      const body = new URLSearchParams();
+      body.append('partNumber', catalogNumber);
+      body.append('callerId', 'products-ui-single-page');
 
-    return true; // Keep message channel open for async response
+      fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Accept': 'application/json, text/javascript, */*; q=0.01'
+        },
+        body: body
+      })
+        .then(r => r.json())
+        .then(data => {
+          let productDataArray = data[catalogNumber] || data;
+          if (!productDataArray) {
+            const cleanKey = catalogNumber.replace(/[^a-zA-Z0-9]/g, '');
+            productDataArray = data[cleanKey];
+          }
+          if (!Array.isArray(productDataArray) && data.priceAndAvailability) {
+            productDataArray = data.priceAndAvailability[catalogNumber] || data.priceAndAvailability[catalogNumber.replace(/[^a-zA-Z0-9]/g, '')];
+          }
+          const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
+
+          if (productData && productData.totalPrice) {
+            sendResponse({
+              success: true,
+              vendor: "Fisher Scientific",
+              data: { catalogNumber: catalogNumber, price: productData.totalPrice }
+            });
+          } else {
+            sendResponse({ success: false, error: "Price not found in Fisher API response" });
+          }
+        })
+        .catch(err => {
+          sendResponse({ success: false, error: err.message });
+        });
+      return true;
+    }
   }
 });
+
+async function fetchVwrPrice(catNum) {
+  try {
+    console.log(`[Quartzy Bridge] Resolving VWR Code for: ${catNum}`);
+
+    // 1. Resolve the "Code" (e.g. NA1060776) required for the ordertable API
+    let vwrCode = null;
+
+    // Is the input itself already a code? (usually starts with NA)
+    if (catNum.toUpperCase().startsWith("NA")) {
+      vwrCode = catNum;
+    }
+
+    // Try current page for metadata
+    if (!vwrCode) {
+      vwrCode = document.querySelector('[name="product_id"]')?.value ||
+        document.querySelector('[data-product-id]')?.getAttribute('data-product-id');
+
+      // Try URL path if we happen to be on a VWR page
+      if (!vwrCode) {
+        const pathMatch = window.location.pathname.match(/\/product\/([A-Z0-9]{5,})\//i);
+        if (pathMatch) vwrCode = pathMatch[1];
+      }
+    }
+
+    // If still not found, search for the catalog number to get the redirect/code
+    if (!vwrCode) {
+      console.log("[Quartzy Bridge] Searching VWR search for code resolution...");
+      const searchUrl = `https://us.vwr.com/store/search?label=${encodeURIComponent(catNum)}`;
+      const searchRes = await fetch(searchUrl);
+
+      // If VWR redirects to the product page, the code is in the new URL
+      if (searchRes.redirected) {
+        const redirectUrl = new URL(searchRes.url);
+        const match = redirectUrl.pathname.match(/\/product\/([A-Z0-9]{5,})\//i);
+        if (match) vwrCode = match[1];
+      }
+
+      if (!vwrCode) {
+        const text = await searchRes.text();
+        // Look for productId in the source
+        const match = text.match(/productId=([A-Z0-9]{5,})/i) || text.match(/"productId":"([A-Z0-9]{5,})"/i);
+        if (match) vwrCode = match[1];
+      }
+    }
+
+    if (!vwrCode) throw new Error("Could not resolve VWR Product Code for " + catNum);
+    console.log(`[Quartzy Bridge] Resolved Code: ${vwrCode}. Fetching pricing...`);
+
+    // 2. Hit the ordertable API
+    const apiUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/api/product/ordertable?productId=${vwrCode}&lang=en_US&curr=USD&user=anonymous&newStorefront=true`;
+
+    const response = await fetch(apiUrl);
+    const data = await response.json();
+
+    if (data.productRows && data.productRows.length > 0) {
+      // Find the specific variant row. 
+      let row = data.productRows.find(r =>
+        r.catalogNumber === catNum ||
+        r.catalogNumber.replace(/[^a-zA-Z0-9]/g, '') === catNum.replace(/[^a-zA-Z0-9]/g, '') ||
+        r.code === catNum
+      );
+
+      // Fallback: take the first one if we resolved the code specifically for this item
+      if (!row) row = data.productRows[0];
+
+      if (row && row.prices && row.prices[0]) {
+        return {
+          success: true,
+          vendor: "VWR",
+          data: {
+            catalogNumber: row.catalogNumber || catNum,
+            vwrCode: row.code || vwrCode,
+            price: row.prices[0].formattedDisplayPrice,
+            itemName: row.name || data.description,
+            unitSize: row.prices[0].uomDescription || "Each"
+          }
+        };
+      }
+    }
+    throw new Error("No pricing data found for " + catNum);
+  } catch (err) {
+    console.error("[Quartzy Bridge] VWR Fetch Error:", err);
+    throw err;
+  }
+}
 
 // Initial Run
 run();
