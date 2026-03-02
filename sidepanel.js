@@ -261,11 +261,24 @@ function renderSavedRequestsList() {
 
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
           if (tabs.length === 0) return;
-          console.log("[Quartzy Bridge] Sending POPULATE_QUARTZY_REQUEST to tab:", tabs[0].id, item);
-          chrome.tabs.sendMessage(tabs[0].id, {
-            type: "POPULATE_QUARTZY_REQUEST",
-            data: item
-          });
+          const activeTab = tabs[0];
+          const isQuartzyNewRequest = activeTab.url.includes("quartzy.com") && activeTab.url.includes("/requests/new");
+
+          if (isQuartzyNewRequest) {
+            console.log("[Quartzy Bridge] Sending POPULATE_QUARTZY_REQUEST to tab:", activeTab.id, item);
+            chrome.tabs.sendMessage(activeTab.id, {
+              type: "POPULATE_QUARTZY_REQUEST",
+              data: item
+            });
+          } else {
+            // Save to storage and navigate
+            console.log("[Quartzy Bridge] Not on Quartzy. Saving pending request and navigating...");
+            chrome.storage.local.set({ 'pending_quartzy_request': item }, () => {
+              // Group ID is 242804 as provided by user
+              const quartzyUrl = "https://app.quartzy.com/groups/242804/requests/new?lookup=false";
+              chrome.tabs.update(activeTab.id, { url: quartzyUrl });
+            });
+          }
         });
       });
     });

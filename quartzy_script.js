@@ -10,6 +10,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
+async function initQuartzy() {
+    console.log("[Quartzy Bridge] Initializing Quartzy script...");
+
+    // Check for pending requests from a redirection
+    chrome.storage.local.get(['pending_quartzy_request'], (result) => {
+        if (result.pending_quartzy_request) {
+            console.log("[Quartzy Bridge] Found pending request, populating now...", result.pending_quartzy_request);
+            populateQuartzyForm(result.pending_quartzy_request);
+            chrome.storage.local.remove('pending_quartzy_request');
+        }
+    });
+}
+
+// Start initialization
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initQuartzy);
+} else {
+    initQuartzy();
+}
+
 function setInputValue(element, value) {
     if (!element || value == null) return;
 
@@ -222,9 +242,13 @@ function getSelectedItems() {
         }
 
         // 2. Quantity
-        const qtyInput = row.querySelector('input[type="number"], input[name*="quantity"], input[name*="qty"], .quantity-input');
-        if (qtyInput && qtyInput.value) {
-            quantity = parseInt(qtyInput.value, 10);
+        const qtyEl = row.querySelector('.quantity, .quantity-input, input[type="number"], input[name*="quantity"], input[name*="qty"]');
+        if (qtyEl) {
+            if (qtyEl.tagName === 'INPUT') {
+                quantity = parseInt(qtyEl.value, 10);
+            } else {
+                quantity = parseInt(qtyEl.innerText.trim(), 10);
+            }
         } else {
             // Fallback: Look for a cell that likely contains quantity (often a small number next to units)
             const cells = Array.from(row.querySelectorAll('td'));
