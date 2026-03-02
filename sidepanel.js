@@ -144,13 +144,21 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 
 let currentFisherData = null;
 
-function updateUI(data) {
+async function updateUI(data) {
   const resultArea = document.getElementById('resultArea');
   if (!resultArea) return;
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const isQuartzy = tab && tab.url.includes("quartzy.com");
 
   if (data.catalogNumber || data.price) {
     currentFisherData = data;
     resultArea.style.display = 'block';
+
+    // On Quartzy, we don't need to see the cat num (we just fetched it) or add to list (we have it)
+    const catSection = document.getElementById('catNumSection');
+    if (catSection) catSection.style.display = isQuartzy ? 'none' : 'block';
+
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
     document.getElementById('priceVal').textContent = data.price || "--";
 
@@ -163,6 +171,9 @@ function updateUI(data) {
 
         const unitSizeEl = document.getElementById('unitSizeVal');
         if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
+
+        const addBtn = document.getElementById('addToListBtn');
+        if (addBtn) addBtn.style.display = isQuartzy ? 'none' : 'block';
       } else {
         extraFields.style.display = 'none';
       }
