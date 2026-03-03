@@ -1,0 +1,15 @@
+---
+description: Core rules for the Quartzy Bridge Pilot Chrome extension
+alwaysApply: true
+---
+
+The primary guidance for AI agents working in this repo now lives in `AGENTS.md` at the project root.
+
+- **Read `AGENTS.md` first** for:
+  - Project overview and architecture boundaries.
+  - Messaging and data flow conventions.
+  - DOM scraping and selector strategy.
+  - Coding style, logging, and external API guidance.
+  - Testing and manual verification expectations.
+
+Keep `AGENTS.md` up to date when architecture or key flows change so that AI assistance stays aligned with reality.
