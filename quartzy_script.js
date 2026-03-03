@@ -7,8 +7,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "POPULATE_QUARTZY_REQUEST") {
         console.log("[Quartzy Bridge] POPULATE_QUARTZY_REQUEST received:", message.data);
         populateQuartzyForm(message.data);
+    } else if (message.type === "PARSE_FISHER_HTML") {
+        const html = message.html;
+        if (!html || typeof html !== "string") {
+            sendResponse({ success: false, error: "no html" });
+            return;
+        }
+        try {
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const catalogNumber = parseFirstFisherCatalogFromDoc(doc);
+            if (catalogNumber) {
+                sendResponse({ success: true, catalogNumber });
+            } else {
+                sendResponse({ success: false, error: "no_match" });
+            }
+        } catch (err) {
+            console.log("[Quartzy Bridge] PARSE_FISHER_HTML error:", err);
+            sendResponse({ success: false, error: err?.message || "parse_error" });
+        }
     }
 });
+
+/**
+ * Find the first search result's catalog number in a Fisher search results document.
+ * Looks for .qa-part-number or text matching Fisher catalog format (e.g. XX-XXX-XXX).
+ */
+function parseFirstFisherCatalogFromDoc(doc) {
+    const fisherCatalogPattern = /^\d{2}-\d{3}-\d{3,}$|^[A-Z0-9]{5,}$|^p-\d+$/i;
+    const byQaPart = doc.querySelector(".qa-part-number");
+    if (byQaPart) {
+        const text = (byQaPart.textContent || "").trim();
+        if (text) return text;
+    }
+    const partNumbers = doc.querySelectorAll("[class*='part-number'], [class*='partNumber'], [data-part-number]");
+    for (const el of partNumbers) {
+        const text = (el.textContent || el.getAttribute("data-part-number") || "").trim();
+        if (text && fisherCatalogPattern.test(text)) return text;
+    }
+    const links = doc.querySelectorAll('a[href*="/shop/products/"], a[href*="/catalog/search/products/"]');
+    for (const a of links) {
+        const href = a.getAttribute("href") || "";
+        const segment = href.split("/").filter(Boolean).pop();
+        const catalog = segment ? segment.replace(/\.html$/, "").split("?")[0] : null;
+        if (catalog && catalog !== "products" && fisherCatalogPattern.test(catalog)) return catalog;
+    }
+    const bodyText = doc.body ? doc.body.innerText : "";
+    const match = bodyText.match(/\b(\d{2}-\d{3}-\d{3,})\b/) || bodyText.match(/\b([A-Z]{2}\d{5,})\b/) || bodyText.match(/\b(p-\d+)\b/i);
+    return match ? match[1] : null;
+}
 
 async function initQuartzy() {
     console.log("[Quartzy Bridge] Initializing Quartzy script...");

@@ -3,12 +3,73 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
 
-// Listen for messages from the content script
-// Listen for messages from the content script
+// --- Fisher fallback search: fetch search HTML, handle redirect or send HTML for parsing ---
+const FISHER_SEARCH_BASE = "https://www.fishersci.com/us/en/catalog/search/products?keyword=";
+
+/**
+ * Fetch Fisher search page. Returns { redirected: true, catalogNumber } if redirected to a product,
+ * or { redirected: false, html } for the raw HTML to parse in a content script.
+ */
+async function fetchFisherSearchHtml(query) {
+  const url = FISHER_SEARCH_BASE + encodeURIComponent(query.trim());
+  const response = await fetch(url, { redirect: "follow" });
+
+  if (response.redirected && response.url) {
+    const u = response.url;
+    if (u.includes("/shop/products/") || u.includes("/catalog/")) {
+      const path = u.split("?")[0];
+      const segments = path.split("/").filter(Boolean);
+      const last = segments[segments.length - 1];
+      const catalog = (last && last.endsWith(".html")) ? last.slice(0, -5) : last;
+      if (catalog && catalog !== "products" && catalog.length >= 2) {
+        console.log("[Quartzy Bridge] Fisher redirect catalog:", catalog);
+        return { redirected: true, catalogNumber: catalog };
+      }
+    }
+  }
+
+  const html = await response.text();
+  return { redirected: false, html };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Handler for DOM scraped data (or Content Script API success)
   if (message.type === "FISHER_DATA_FOUND") {
     saveAndNotify(sender.tab.id, message.data);
+  } else if (message.type === "RESOLVE_FISHER_CATALOG_NUMBER") {
+    const { query, tabId } = message;
+    if (!query || !tabId) {
+      sendResponse({ success: false, error: "missing query or tabId" });
+      return;
+    }
+    (async () => {
+      try {
+        const result = await fetchFisherSearchHtml(query);
+        if (result.redirected && result.catalogNumber) {
+          sendResponse({ success: true, catalogNumber: result.catalogNumber });
+          return;
+        }
+        if (!result.html) {
+          sendResponse({ success: false, error: "no html" });
+          return;
+        }
+        chrome.tabs.sendMessage(tabId, { type: "PARSE_FISHER_HTML", html: result.html }, (parseResponse) => {
+          if (chrome.runtime.lastError) {
+            console.log("[Quartzy Bridge] Fisher HTML parse error:", chrome.runtime.lastError.message);
+            sendResponse({ success: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          if (parseResponse && parseResponse.success && parseResponse.catalogNumber) {
+            sendResponse({ success: true, catalogNumber: parseResponse.catalogNumber });
+          } else {
+            sendResponse({ success: false, error: parseResponse?.error || "no_match" });
+          }
+        });
+      } catch (err) {
+        console.log("[Quartzy Bridge] Fisher search error:", err?.message || err);
+        sendResponse({ success: false, error: err?.message || "fetch_error" });
+      }
+    })();
+    return true;
   } else if (message.type === "OPEN_VENDOR_TAB") {
     const vendor = message.vendor;
     const isVwr = vendor === "VWR";

@@ -148,10 +148,11 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
     statusMsg.style.display = 'none';
   }
 
-  // Fisher section
-  if (fisherTabs.length > 0) {
-    fisherLoading.style.display = 'block';
-    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, (response) => {
+  // Fisher catalog format: XX-XXX-XXX or similar; if not, try fallback search to resolve MPN -> catalog
+  const looksLikeFisherCatalog = /^\d{2}-\d{3}-\d{3,}$|^[A-Z0-9]{5,}$|^p-\d+$/i.test(catNum.trim());
+
+  function runFisherFetch(fisherCatalogNumber) {
+    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: fisherCatalogNumber }, (response) => {
       fisherLoading.style.display = 'none';
       pending--;
       if (response && response.success && response.vendor === "Fisher Scientific") {
@@ -172,6 +173,25 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
       }
       checkDone();
     });
+  }
+
+  // Fisher section
+  if (fisherTabs.length > 0) {
+    fisherLoading.style.display = 'block';
+    if (looksLikeFisherCatalog || !activeTab?.id) {
+      runFisherFetch(catNum);
+    } else {
+      chrome.runtime.sendMessage(
+        { type: "RESOLVE_FISHER_CATALOG_NUMBER", query: catNum, tabId: activeTab.id },
+        (resolveResponse) => {
+          if (resolveResponse && resolveResponse.success && resolveResponse.catalogNumber) {
+            runFisherFetch(resolveResponse.catalogNumber);
+          } else {
+            runFisherFetch(catNum);
+          }
+        }
+      );
+    }
   } else {
     fisherNoTab.style.display = 'block';
     pending--;
