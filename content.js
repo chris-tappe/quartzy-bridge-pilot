@@ -3,6 +3,7 @@ console.log("[Quartzy Bridge] Content Script Loaded");
 // Example: .../products/stripette.../07200574?crossRef... -> 07200574
 const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
 let vwrInterceptedData = null;
+let vwrAuthToken = null;
 
 // Inject the VWR Interceptor for network sniffing
 if (window.location.href.includes("vwr.com") || window.location.href.includes("avantorsciences.com")) {
@@ -19,6 +20,10 @@ window.addEventListener("message", (event) => {
     console.log("[Quartzy Bridge] Received data from Interceptor:", event.data.data);
     vwrInterceptedData = event.data.data;
     scrapeVendorData(); // Trigger immediate update
+  }
+  if (event.data && event.data.type === "VWR_TOKEN_UPDATE") {
+    vwrAuthToken = event.data.token;
+    console.log("[Quartzy Bridge] VWR Auth Token Updated");
   }
 });
 
@@ -324,67 +329,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function fetchVwrPrice(catNum) {
   try {
-    console.log(`[Quartzy Bridge] Resolving VWR Code for: ${catNum}`);
+    console.log(`[Quartzy Bridge] Refining VWR lookup for: ${catNum}`);
 
-    // 1. Resolve the "Code" (e.g. NA1060776) required for the ordertable API
+    // A. Ensure we have a token
+    if (!vwrAuthToken) {
+      console.log("[Quartzy Bridge] No session token found. Fetching guest token...");
+      const tokenRes = await fetch("https://occapi.avantorsciences.com/authorizationserver/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "client_id=VVjdGUHAb3ETZLEVTWtFy3BmhFhXSdBB&client_secret=iYg25p8rt-0-YlZGJNUrm4f6wuNRBZpAuX6TXCAwj1phfX2GOXXSskBW_paF0Jvk&grant_type=client_credentials"
+      });
+      const tokenData = await tokenRes.json();
+      if (tokenData.access_token) {
+        vwrAuthToken = `Bearer ${tokenData.access_token}`;
+        console.log("[Quartzy Bridge] Guest token acquired.");
+      }
+    }
+
+    // 1. Resolve Catalog Number to internal "Code" (e.g. NA1286493)
+    // KeywordSearch requires POST + JSON body + Bearer token
+    const searchUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/products/keywordSearch?query=${encodeURIComponent(catNum)}&pageSize=5&fields=BASIC&lang=en_US&curr=USD&newStorefront=true`;
+
+    const searchRes = await fetch(searchUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": vwrAuthToken,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ "viewType": "EASY_VIEW" })
+    });
+    const searchData = await searchRes.json();
+
     let vwrCode = null;
-
-    // Is the input itself already a code? (usually starts with NA)
-    if (catNum.toUpperCase().startsWith("NA")) {
-      vwrCode = catNum;
+    if (searchData.products && searchData.products.length > 0) {
+      // Find the best match
+      vwrCode = searchData.products[0].code;
     }
 
-    // Try current page for metadata
     if (!vwrCode) {
-      vwrCode = document.querySelector('[name="product_id"]')?.value ||
-        document.querySelector('[data-product-id]')?.getAttribute('data-product-id');
-
-      // Try URL path if we happen to be on a VWR page
-      if (!vwrCode) {
-        const pathMatch = window.location.pathname.match(/\/product\/([A-Z0-9]{5,})\//i);
-        if (pathMatch) vwrCode = pathMatch[1];
-      }
+      throw new Error(`Could not resolve VWR Code for ${catNum} via KeywordSearch`);
     }
 
-    // If still not found, search for the catalog number to get the redirect/code
-    if (!vwrCode) {
-      console.log("[Quartzy Bridge] Searching VWR search for code resolution...");
-      const searchUrl = `https://us.vwr.com/store/search?label=${encodeURIComponent(catNum)}`;
-      const searchRes = await fetch(searchUrl);
+    console.log(`[Quartzy Bridge] Resolved VWR Code: ${vwrCode}. Fetching price...`);
 
-      // If VWR redirects to the product page, the code is in the new URL
-      if (searchRes.redirected) {
-        const redirectUrl = new URL(searchRes.url);
-        const match = redirectUrl.pathname.match(/\/product\/([A-Z0-9]{5,})\//i);
-        if (match) vwrCode = match[1];
-      }
-
-      if (!vwrCode) {
-        const text = await searchRes.text();
-        // Look for productId in the source
-        const match = text.match(/productId=([A-Z0-9]{5,})/i) || text.match(/"productId":"([A-Z0-9]{5,})"/i);
-        if (match) vwrCode = match[1];
-      }
-    }
-
-    if (!vwrCode) throw new Error("Could not resolve VWR Product Code for " + catNum);
-    console.log(`[Quartzy Bridge] Resolved Code: ${vwrCode}. Fetching pricing...`);
-
-    // 2. Hit the ordertable API
+    // 2. Hit the ordertable API using the resolved code
     const apiUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/api/product/ordertable?productId=${vwrCode}&lang=en_US&curr=USD&user=anonymous&newStorefront=true`;
 
-    const response = await fetch(apiUrl);
+    const response = await fetch(apiUrl, {
+      headers: vwrAuthToken ? { "Authorization": vwrAuthToken } : {}
+    });
     const data = await response.json();
 
     if (data.productRows && data.productRows.length > 0) {
       // Find the specific variant row. 
       let row = data.productRows.find(r =>
         r.catalogNumber === catNum ||
-        r.catalogNumber.replace(/[^a-zA-Z0-9]/g, '') === catNum.replace(/[^a-zA-Z0-9]/g, '') ||
+        (r.catalogNumber && r.catalogNumber.replace(/[^a-zA-Z0-9]/g, '') === catNum.replace(/[^a-zA-Z0-9]/g, '')) ||
         r.code === catNum
       );
 
-      // Fallback: take the first one if we resolved the code specifically for this item
+      // Fallback: take the first one
       if (!row) row = data.productRows[0];
 
       if (row && row.prices && row.prices[0]) {
@@ -401,9 +405,9 @@ async function fetchVwrPrice(catNum) {
         };
       }
     }
-    throw new Error("No pricing data found for " + catNum);
+    throw new Error("No pricing data found in ordertable for " + catNum);
   } catch (err) {
-    console.error("[Quartzy Bridge] VWR Fetch Error:", err);
+    console.error("[Quartzy Bridge] VWR Refined Fetch Error:", err);
     throw err;
   }
 }
