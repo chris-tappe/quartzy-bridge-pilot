@@ -11,7 +11,9 @@
   ],
   "host_permissions": [
     "*://*.fishersci.com/*",
-    "*://*.vwr.com/*"
+    "*://*.vwr.com/*",
+    "*://*.avantorsciences.com/*",
+    "*://occapi.avantorsciences.com/*"
   ],
   "background": {
     "service_worker": "background.js"

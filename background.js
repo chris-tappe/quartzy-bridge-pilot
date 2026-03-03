@@ -32,6 +32,50 @@ async function fetchFisherSearchHtml(query) {
   return { redirected: false, html };
 }
 
+// --- VWR keyword search: map MPN to SPN (e.g. "Corning 3960" -> "29445-164") ---
+const VWR_KEYWORD_SEARCH_BASE = "https://occapi.avantorsciences.com/occ/v2/us.vwr.com/products/keywordSearch";
+
+function extractCorePart(query) {
+  const trimmed = (query || "").trim();
+  if (!trimmed) return "";
+  const tokens = trimmed.split(/\s+/);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i].replace(/[^a-zA-Z0-9]/g, "");
+    if (t.length > 0) return t;
+  }
+  return trimmed.replace(/[^a-zA-Z0-9]/g, "") || trimmed;
+}
+
+async function fetchVwrCatalogNumber(query) {
+  const encoded = encodeURIComponent(query.trim());
+  const url = `${VWR_KEYWORD_SEARCH_BASE}?query=${encoded}&pageSize=10&fields=BASIC&lang=en_US&curr=USD&newStorefront=true`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+    const data = await res.json();
+    const products = data?.products || data?.productList || [];
+    const corePart = extractCorePart(query).toLowerCase();
+
+    for (const product of products) {
+      const vendorNums = product.vendorCatalogNumbers || product.vendorCatalogNumber || [];
+      const arr = Array.isArray(vendorNums) ? vendorNums : [vendorNums];
+      const vwrNum = (product.vwrCatalogNumber ?? product.catalogNumber ?? "").toString().trim();
+      const articleNum = (product.vwrArticleNumber ?? product.articleNumber ?? "").toString().trim();
+      const vendorMatch = arr.some((v) => String(v).trim().toLowerCase() === corePart);
+      const articleMatch = articleNum && articleNum.toLowerCase().includes(corePart);
+      if ((vendorMatch || articleMatch) && vwrNum) {
+        console.log("[Quartzy Bridge] VWR catalog mapping success:", query, "->", vwrNum);
+        return { success: true, vwrCatalogNumber: vwrNum };
+      }
+    }
+    console.log("[Quartzy Bridge] VWR catalog mapping failure: no matching product for query:", query);
+    return { success: false, error: "no_match" };
+  } catch (err) {
+    console.log("[Quartzy Bridge] VWR keyword search error:", err?.message || err);
+    return { success: false, error: err?.message || "fetch_error" };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "FISHER_DATA_FOUND") {
     saveAndNotify(sender.tab.id, message.data);
@@ -69,6 +113,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: err?.message || "fetch_error" });
       }
     })();
+    return true;
+  } else if (message.type === "RESOLVE_VWR_CATALOG_NUMBER") {
+    const query = message.query;
+    if (!query) {
+      sendResponse({ success: false, error: "missing query" });
+      return;
+    }
+    fetchVwrCatalogNumber(query).then(sendResponse).catch((err) => {
+      console.log("[Quartzy Bridge] RESOLVE_VWR_CATALOG_NUMBER error:", err);
+      sendResponse({ success: false, error: err?.message });
+    });
     return true;
   } else if (message.type === "OPEN_VENDOR_TAB") {
     const vendor = message.vendor;

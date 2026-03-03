@@ -142,100 +142,151 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 
   let sharedExtras = null;
   let pending = (fisherTabs.length ? 1 : 0) + (vwrTabs.length ? 1 : 0);
+  let fisherSettled = false;
+  let vwrSettled = false;
 
   function checkDone() {
     if (pending > 0) return;
     statusMsg.style.display = 'none';
   }
 
-  // Fisher catalog format: XX-XXX-XXX or similar; if not, try fallback search to resolve MPN -> catalog
-  const looksLikeFisherCatalog = /^\d{2}-\d{3}-\d{3,}$|^[A-Z0-9]{5,}$|^p-\d+$/i.test(catNum.trim());
-
-  function runFisherFetch(fisherCatalogNumber) {
-    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: fisherCatalogNumber }, (response) => {
-      fisherLoading.style.display = 'none';
-      pending--;
-      if (response && response.success && response.vendor === "Fisher Scientific") {
-        const el = document.getElementById('fisherPriceVal');
-        if (el) el.textContent = response.data.price || "--";
-        fisherPriceContent.style.display = 'block';
-        const addBtn = document.getElementById('addFisherToListBtn');
-        if (addBtn) {
-          addBtn.style.display = 'none';
-          addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
-        }
-        if (!sharedExtras && response.data.itemName) {
-          sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
-          maybeShowExtras();
-        }
-      } else {
-        fisherNoPrice.style.display = 'block';
+  function applyFisherResult(response) {
+    if (fisherSettled) return;
+    fisherSettled = true;
+    fisherLoading.style.display = 'none';
+    pending--;
+    if (response && response.success && response.vendor === "Fisher Scientific") {
+      const el = document.getElementById('fisherPriceVal');
+      if (el) el.textContent = response.data.price || "--";
+      fisherPriceContent.style.display = 'block';
+      const addBtn = document.getElementById('addFisherToListBtn');
+      if (addBtn) {
+        addBtn.style.display = 'none';
+        addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
       }
-      checkDone();
-    });
+      if (!sharedExtras && response.data.itemName) {
+        sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
+        maybeShowExtras();
+      }
+    } else {
+      fisherNoPrice.style.display = 'block';
+    }
+    checkDone();
   }
 
-  // Fisher section
+  function applyVwrResult(response) {
+    if (vwrSettled) return;
+    vwrSettled = true;
+    vwrLoading.style.display = 'none';
+    pending--;
+    if (response && response.success && response.vendor === "VWR") {
+      const listEl = document.getElementById('vwrPriceList');
+      if (listEl) {
+        listEl.innerHTML = '';
+        if (response.data.prices && response.data.prices.length > 0) {
+          response.data.prices.forEach(p => {
+            const div = document.createElement('div');
+            div.className = 'price-primary';
+            div.textContent = `${p.price} (${p.unitSize})`;
+            listEl.appendChild(div);
+          });
+        } else {
+          const div = document.createElement('div');
+          div.className = 'price-primary';
+          div.textContent = response.data.price || "--";
+          listEl.appendChild(div);
+        }
+      }
+      vwrPriceContent.style.display = 'block';
+      const addBtn = document.getElementById('addVwrToListBtn');
+      if (addBtn) {
+        addBtn.style.display = 'none';
+        addBtn.onclick = () => saveVendorItem(response.data, "VWR");
+      }
+      if (!sharedExtras && response.data.itemName) {
+        sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
+        maybeShowExtras();
+      }
+    } else {
+      vwrNoPrice.style.display = 'block';
+    }
+    checkDone();
+  }
+
+  // --- Dumb router: raw query, primary then fallback per vendor, no format-based routing ---
+
+  // Fisher pipeline: primary (direct API with raw query) → on failure, fallback (HTML resolve) → fetch with resolved catalog
   if (fisherTabs.length > 0) {
     fisherLoading.style.display = 'block';
-    if (looksLikeFisherCatalog || !activeTab?.id) {
-      runFisherFetch(catNum);
-    } else {
+    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, (response) => {
+      if (chrome.runtime.lastError) {
+        response = null;
+      }
+      try {
+        if (response && response.success && response.vendor === "Fisher Scientific") {
+          applyFisherResult(response);
+          return;
+        }
+      } catch (_) { /* ignore */ }
+      // Primary failed or no response: trigger Fisher fallback (HTML search + parse), then try direct API again with resolved catalog
       chrome.runtime.sendMessage(
-        { type: "RESOLVE_FISHER_CATALOG_NUMBER", query: catNum, tabId: activeTab.id },
+        { type: "RESOLVE_FISHER_CATALOG_NUMBER", query: catNum, tabId: activeTab?.id },
         (resolveResponse) => {
-          if (resolveResponse && resolveResponse.success && resolveResponse.catalogNumber) {
-            runFisherFetch(resolveResponse.catalogNumber);
-          } else {
-            runFisherFetch(catNum);
+          try {
+            const resolved = (resolveResponse && resolveResponse.success && resolveResponse.catalogNumber)
+              ? resolveResponse.catalogNumber
+              : catNum;
+            chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: resolved }, (fallbackResponse) => {
+              if (chrome.runtime.lastError) fallbackResponse = null;
+              try {
+                applyFisherResult(fallbackResponse);
+              } catch (e) {
+                applyFisherResult(null);
+              }
+            });
+          } catch (e) {
+            applyFisherResult(null);
           }
         }
       );
-    }
+    });
   } else {
     fisherNoTab.style.display = 'block';
     pending--;
     checkDone();
   }
 
-  // VWR section
+  // VWR pipeline: primary (direct API with raw query) → on failure, fallback (occapi keyword search) → fetch with resolved catalog
   if (vwrTabs.length > 0) {
     vwrLoading.style.display = 'block';
     chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, (response) => {
-      vwrLoading.style.display = 'none';
-      pending--;
-      if (response && response.success && response.vendor === "VWR") {
-        const listEl = document.getElementById('vwrPriceList');
-        if (listEl) {
-          listEl.innerHTML = '';
-          if (response.data.prices && response.data.prices.length > 0) {
-            response.data.prices.forEach(p => {
-              const div = document.createElement('div');
-              div.className = 'price-primary';
-              div.textContent = `${p.price} (${p.unitSize})`;
-              listEl.appendChild(div);
-            });
-          } else {
-            const div = document.createElement('div');
-            div.className = 'price-primary';
-            div.textContent = response.data.price || "--";
-            listEl.appendChild(div);
-          }
-        }
-        vwrPriceContent.style.display = 'block';
-        const addBtn = document.getElementById('addVwrToListBtn');
-        if (addBtn) {
-          addBtn.style.display = 'none';
-          addBtn.onclick = () => saveVendorItem(response.data, "VWR");
-        }
-        if (!sharedExtras && response.data.itemName) {
-          sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
-          maybeShowExtras();
-        }
-      } else {
-        vwrNoPrice.style.display = 'block';
+      if (chrome.runtime.lastError) {
+        response = null;
       }
-      checkDone();
+      try {
+        if (response && response.success && response.vendor === "VWR") {
+          applyVwrResult(response);
+          return;
+        }
+      } catch (_) { /* ignore */ }
+      // Primary failed or no response: trigger VWR fallback (occapi keyword search), then try direct API again with resolved catalog
+      chrome.runtime.sendMessage({ type: "RESOLVE_VWR_CATALOG_NUMBER", query: catNum }, (resolveResponse) => {
+        try {
+          const resolved = (resolveResponse && resolveResponse.success && resolveResponse.vwrCatalogNumber)
+            ? resolveResponse.vwrCatalogNumber
+            : catNum;
+          chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: resolved }, (fallbackResponse) => {
+            if (chrome.runtime.lastError) fallbackResponse = null;
+            try {
+              applyVwrResult(fallbackResponse);
+            } catch (e) {
+              applyVwrResult(null);
+            }
+          });
+        } catch (e) {
+          applyVwrResult(null);
+        }
+      });
     });
   } else {
     vwrNoTab.style.display = 'block';
@@ -256,15 +307,17 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
     document.getElementById('unitSizeVal').textContent = sharedExtras.unitSize || "--";
   }
 
-  // Timeout: if a tab never responds, show no price for that vendor
+  // Timeout: if a pipeline never settles (primary + fallback both hung), show no price and settle once
   setTimeout(() => {
-    if (fisherLoading.style.display === 'block') {
+    if (!fisherSettled && fisherLoading.style.display === 'block') {
+      fisherSettled = true;
       fisherLoading.style.display = 'none';
       fisherNoPrice.style.display = 'block';
       pending--;
       checkDone();
     }
-    if (vwrLoading.style.display === 'block') {
+    if (!vwrSettled && vwrLoading.style.display === 'block') {
+      vwrSettled = true;
       vwrLoading.style.display = 'none';
       vwrNoPrice.style.display = 'block';
       pending--;
