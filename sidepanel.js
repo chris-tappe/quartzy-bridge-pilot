@@ -86,6 +86,9 @@ chrome.tabs.onUpdated.addListener(updateViewMode);
 
 renderSavedRequestsList();
 
+const openVendorTabBtn = document.getElementById('openVendorTabBtn');
+const retryVendorSearchBtn = document.getElementById('retryVendorSearchBtn');
+let lastVendorSearch = null; // { catalogNumber, vendor }
 
 // --- Quartzy Bridge Logic ---
 
@@ -104,6 +107,8 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   document.getElementById('fisherResult').style.display = 'none';
   document.getElementById('vwrResult').style.display = 'none';
   document.getElementById('extraDataFields').style.display = 'none';
+  if (openVendorTabBtn) openVendorTabBtn.style.display = 'none';
+  if (retryVendorSearchBtn) retryVendorSearchBtn.style.display = 'none';
 
   statusMsg.style.display = 'block';
   statusMsg.innerText = "Querying vendors...";
@@ -115,12 +120,6 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 
   const fisherTabs = await chrome.tabs.query({ url: "*://*.fishersci.com/*" });
   const vwrTabs = await chrome.tabs.query({ url: ["*://*.vwr.com/*", "*://*.avantorsciences.com/*"] });
-
-  if (fisherTabs.length === 0 && vwrTabs.length === 0) {
-    statusMsg.innerText = "Error: No open Fisher or VWR tabs found. Please open one.";
-    statusMsg.style.color = "red";
-    return;
-  }
 
   let resultsFound = 0;
   let sharedExtras = null;
@@ -207,19 +206,33 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
 
   if (isVwrFormat) {
     if (vwrTabs.length > 0) {
+      lastVendorSearch = { catalogNumber: catNum, vendor: "VWR" };
       statusMsg.innerText = "Querying VWR...";
       chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
     } else {
-      statusMsg.innerText = "Error: Please open a VWR tab to search this catalog number.";
-      statusMsg.style.color = "red";
+      lastVendorSearch = { catalogNumber: catNum, vendor: "VWR" };
+      statusMsg.innerText = "No VWR tab open.";
+      statusMsg.style.color = "#b91c1c";
+      if (openVendorTabBtn && retryVendorSearchBtn) {
+        openVendorTabBtn.textContent = "Open VWR to search";
+        openVendorTabBtn.style.display = 'block';
+        retryVendorSearchBtn.style.display = 'block';
+      }
     }
   } else {
     if (fisherTabs.length > 0) {
+      lastVendorSearch = { catalogNumber: catNum, vendor: "Fisher Scientific" };
       statusMsg.innerText = "Querying Fisher Scientific...";
       chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
     } else {
-      statusMsg.innerText = "Error: Please open a Fisher Scientific tab to search this catalog number.";
-      statusMsg.style.color = "red";
+      lastVendorSearch = { catalogNumber: catNum, vendor: "Fisher Scientific" };
+      statusMsg.innerText = "No Fisher Scientific tab open.";
+      statusMsg.style.color = "#b91c1c";
+      if (openVendorTabBtn && retryVendorSearchBtn) {
+        openVendorTabBtn.textContent = "Open Fisher Scientific to search";
+        openVendorTabBtn.style.display = 'block';
+        retryVendorSearchBtn.style.display = 'block';
+      }
     }
   }
 
@@ -231,6 +244,37 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
     }
   }, 5000);
 });
+
+if (openVendorTabBtn) {
+  openVendorTabBtn.addEventListener('click', () => {
+    const statusMsg = document.getElementById('bridgeStatus');
+    if (!lastVendorSearch) return;
+
+    const vendor = lastVendorSearch.vendor;
+    statusMsg.style.display = 'block';
+    statusMsg.innerText = `Opening ${vendor} tab...`;
+    statusMsg.style.color = "#666";
+
+    chrome.runtime.sendMessage({ type: "OPEN_VENDOR_TAB", vendor }, (response) => {
+      if (response && response.success) {
+        statusMsg.innerText = `Switched to ${vendor}. Once you're signed in, click "Retry search".`;
+        statusMsg.style.color = "#15803d";
+      } else {
+        statusMsg.innerText = `Unable to open ${vendor} tab.`;
+        statusMsg.style.color = "#b91c1c";
+      }
+    });
+  });
+}
+
+if (retryVendorSearchBtn) {
+  retryVendorSearchBtn.addEventListener('click', () => {
+    if (!lastVendorSearch) return;
+    const input = document.getElementById('quartzyInput');
+    input.value = lastVendorSearch.catalogNumber;
+    document.getElementById('fetchBridgeBtn').click();
+  });
+}
 
 function saveVendorItem(itemData, vendorName) {
   const fullData = {

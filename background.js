@@ -9,6 +9,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handler for DOM scraped data (or Content Script API success)
   if (message.type === "FISHER_DATA_FOUND") {
     saveAndNotify(sender.tab.id, message.data);
+  } else if (message.type === "OPEN_VENDOR_TAB") {
+    const vendor = message.vendor;
+    const isVwr = vendor === "VWR";
+
+    const vwrQuery = { url: ["*://*.vwr.com/*", "*://*.avantorsciences.com/*"] };
+    const fisherQuery = { url: "*://*.fishersci.com/*" };
+
+    const query = isVwr ? vwrQuery : fisherQuery;
+    const targetUrl = isVwr ? "https://www.avantorsciences.com/us/en/" : "https://www.fishersci.com";
+
+    chrome.tabs.query(query, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        const tab = tabs[0];
+        // Reuse existing vendor tab but keep focus on current Quartzy tab
+        sendResponse({ success: true, tabId: tab.id, created: false });
+      } else {
+        // Open vendor tab in background so user stays on Quartzy
+        chrome.tabs.create({ url: targetUrl, active: false }, (tab) => {
+          if (chrome.runtime.lastError || !tab) {
+            console.log("[Background] Failed to open vendor tab", chrome.runtime.lastError);
+            sendResponse({ success: false });
+          } else {
+            console.log("[Background] Opened vendor tab", vendor, tab.id);
+            sendResponse({ success: true, tabId: tab.id, created: true });
+          }
+        });
+      }
+    });
+
+    return true; // Keep sendResponse alive for async calls
   }
 });
 
