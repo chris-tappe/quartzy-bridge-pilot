@@ -113,7 +113,6 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   const vwrLoading = document.getElementById('vwrLoading');
 
   resultArea.style.display = 'block';
-  document.getElementById('catNum').textContent = catNum;
   document.getElementById('extraDataFields').style.display = 'none';
   document.getElementById('addToListBtn').style.display = 'none';
   if (openVendorTabBtn) openVendorTabBtn.style.display = 'none';
@@ -159,6 +158,16 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
       const el = document.getElementById('fisherPriceVal');
       if (el) el.textContent = response.data.price || "--";
       fisherPriceContent.style.display = 'block';
+      const catalogEl = document.getElementById('fisherCatalogNum');
+      if (catalogEl) {
+        const cn = response.data.catalogNumber || catNum;
+        if (cn) {
+          catalogEl.textContent = `Catalog: ${cn}`;
+          catalogEl.style.display = 'block';
+        } else {
+          catalogEl.style.display = 'none';
+        }
+      }
       const nameEl = document.getElementById('fisherItemName');
       if (nameEl) {
         if (response.data.itemName) {
@@ -189,6 +198,11 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
               if (chrome.runtime.lastError || !refetchResponse?.success) return;
               const el = document.getElementById('fisherPriceVal');
               if (el) el.textContent = refetchResponse.data?.price || '--';
+              const catalogEl = document.getElementById('fisherCatalogNum');
+              if (catalogEl && refetchResponse.data?.catalogNumber) {
+                catalogEl.textContent = `Catalog: ${refetchResponse.data.catalogNumber}`;
+                catalogEl.style.display = 'block';
+              }
               const nameEl = document.getElementById('fisherItemName');
               if (nameEl && refetchResponse.data?.itemName) {
                 nameEl.textContent = refetchResponse.data.itemName;
@@ -233,6 +247,16 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         }
       }
       vwrPriceContent.style.display = 'block';
+      const catalogEl = document.getElementById('vwrCatalogNum');
+      if (catalogEl) {
+        const cn = response.data.catalogNumber || catNum;
+        if (cn) {
+          catalogEl.textContent = `Catalog: ${cn}`;
+          catalogEl.style.display = 'block';
+        } else {
+          catalogEl.style.display = 'none';
+        }
+      }
       const nameEl = document.getElementById('vwrItemName');
       if (nameEl) {
         if (response.data.itemName) {
@@ -277,6 +301,11 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
                   div.textContent = refetchResponse.data?.price || '--';
                   listEl.appendChild(div);
                 }
+              }
+              const catalogEl = document.getElementById('vwrCatalogNum');
+              if (catalogEl && refetchResponse.data?.catalogNumber) {
+                catalogEl.textContent = `Catalog: ${refetchResponse.data.catalogNumber}`;
+                catalogEl.style.display = 'block';
               }
               const nameEl = document.getElementById('vwrItemName');
               if (nameEl && refetchResponse.data?.itemName) {
@@ -514,9 +543,25 @@ async function updateUI(data) {
     document.getElementById('addFisherToListBtn').style.display = 'none';
     document.getElementById('addVwrToListBtn').style.display = 'none';
 
-    const catSection = document.getElementById('catNumSection');
-    if (catSection) catSection.style.display = isQuartzy ? 'none' : 'block';
-    document.getElementById('catNum').textContent = data.catalogNumber || "--";
+    const cn = data.catalogNumber || "--";
+    const fisherCatEl = document.getElementById('fisherCatalogNum');
+    const vwrCatEl = document.getElementById('vwrCatalogNum');
+    if (fisherCatEl) {
+      if (isFisherOnTab && cn !== "--") {
+        fisherCatEl.textContent = `Catalog: ${cn}`;
+        fisherCatEl.style.display = 'block';
+      } else {
+        fisherCatEl.style.display = 'none';
+      }
+    }
+    if (vwrCatEl) {
+      if (isVwrOnTab && cn !== "--") {
+        vwrCatEl.textContent = `Catalog: ${cn}`;
+        vwrCatEl.style.display = 'block';
+      } else {
+        vwrCatEl.style.display = 'none';
+      }
+    }
 
     if (isVwrOnTab) {
       const listEl = document.getElementById('vwrPriceList');
