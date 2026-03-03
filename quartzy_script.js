@@ -151,9 +151,10 @@ async function populateQuartzyForm(data) {
     console.log("[Quartzy Bridge] Populating form with:", data);
 
     // 1. Vendor (Ember Power Select)
-    const vendorFilled = await fillEmberDropdown("Vendor", "Fisher Scientific");
+    const vendorToFill = data.vendor || "Fisher Scientific";
+    const vendorFilled = await fillEmberDropdown("Vendor", vendorToFill);
     if (!vendorFilled) {
-        console.warn("[Quartzy Bridge] Could not find Vendor dropdown trigger.");
+        console.warn(`[Quartzy Bridge] Could not find Vendor dropdown trigger for ${vendorToFill}.`);
     }
 
     // 2. Catalog Number (Ember Power Select)
@@ -262,9 +263,30 @@ function getSelectedItems() {
             }
         }
 
+        // 3. Vendor
+        let vendor = "Unknown";
+        if (rowText.toLowerCase().includes("fisher")) {
+            vendor = "Fisher Scientific";
+        } else if (rowText.toLowerCase().includes("vwr")) {
+            vendor = "VWR";
+        } else {
+            // Try to find in columns
+            const cells = Array.from(row.querySelectorAll('td'));
+            const vendorCell = cells.find(td =>
+                td.innerText.toLowerCase().includes("fisher") ||
+                td.innerText.toLowerCase().includes("vwr")
+            );
+            if (vendorCell) {
+                const text = vendorCell.innerText.toLowerCase();
+                if (text.includes("fisher")) vendor = "Fisher Scientific";
+                else if (text.includes("vwr")) vendor = "VWR";
+            }
+        }
+
         itemsToTransfer.push({
-            catalogNumber: catalogNumber,
-            quantity: quantity || 1
+            catalogNumber: catalogNumber.trim(),
+            quantity: Math.max(1, quantity || 1),
+            vendor: vendor
         });
     });
 

@@ -45,6 +45,15 @@
         "fisher_script.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://www.avantorsciences.com/*/my-account/quick-order*"
+      ],
+      "js": [
+        "vwr_script.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "icons": {

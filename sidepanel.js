@@ -395,13 +395,15 @@ let currentQuartzySelection = [];
 function updateSelectedItemsUI(items) {
   currentQuartzySelection = items || [];
   const listEl = document.getElementById('selectedItemsList');
-  const btn = document.getElementById('transferToFisherBtn');
+  const fisherBtn = document.getElementById('transferToFisherBtn');
+  const vwrBtn = document.getElementById('transferToVwrBtn');
   const bulkCard = document.getElementById('bulkTransferCard');
-  if (!listEl || !btn) return;
+  if (!listEl || !fisherBtn || !vwrBtn) return;
 
   if (currentQuartzySelection.length === 0) {
     listEl.innerHTML = "Check boxes in Quartzy to see items here.";
-    btn.style.display = 'none';
+    fisherBtn.style.display = 'none';
+    vwrBtn.style.display = 'none';
     if (bulkCard) bulkCard.style.display = 'none';
     return;
   }
@@ -410,14 +412,32 @@ function updateSelectedItemsUI(items) {
   if (bulkCard) bulkCard.style.display = 'block';
 
   listEl.innerHTML = currentQuartzySelection.map(item =>
-    `<div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom: 4px; margin-bottom: 4px;">
-      <span><strong>Cat #:</strong> ${item.catalogNumber}</span>
-      <span><strong>Qty:</strong> ${item.quantity}</span>
+    `<div style="display:flex; flex-direction: column; border-bottom:1px solid #eee; padding-bottom: 4px; margin-bottom: 4px;">
+      <div style="display:flex; justify-content:space-between;">
+        <span><strong>Cat #:</strong> ${item.catalogNumber}</span>
+        <span><strong>Qty:</strong> ${item.quantity}</span>
+      </div>
+      <div style="font-size: 10px; color: #888;">Vendor: ${item.vendor}</div>
     </div>`
   ).join('');
 
-  btn.style.display = 'block';
-  btn.innerText = `Transfer ${currentQuartzySelection.length} Item(s)`;
+  // Determine button visibility
+  const allFisher = currentQuartzySelection.every(item => item.vendor === "Fisher Scientific");
+  const allVwr = currentQuartzySelection.every(item => item.vendor === "VWR");
+
+  fisherBtn.style.display = allFisher ? 'block' : 'none';
+  vwrBtn.style.display = allVwr ? 'block' : 'none';
+
+  if (allFisher) {
+    fisherBtn.innerText = `Transfer ${currentQuartzySelection.length} to Fisher`;
+  } else if (allVwr) {
+    vwrBtn.innerText = `Transfer ${currentQuartzySelection.length} to VWR`;
+  } else {
+    // Mixed or Unknown
+    fisherBtn.style.display = 'none';
+    vwrBtn.style.display = 'none';
+    listEl.innerHTML += `<div style="color: red; font-size: 11px; margin-top: 5px;">Mixed vendors selected. Please select only Fisher or only VWR items.</div>`;
+  }
 }
 
 const transferBtnEl = document.getElementById('transferToFisherBtn');
@@ -433,6 +453,25 @@ if (transferBtnEl) {
     chrome.storage.local.set({ 'fisher_order_queue': currentQuartzySelection }, () => {
       statusMsg.innerText = "Opening Fisher Rapid Order...";
       chrome.tabs.create({ url: "https://www.fishersci.com/store1/rapidorder" }, () => {
+        statusMsg.style.display = 'none';
+      });
+    });
+  });
+}
+
+const vwrTransferBtnEl = document.getElementById('transferToVwrBtn');
+if (vwrTransferBtnEl) {
+  vwrTransferBtnEl.addEventListener('click', () => {
+    const statusMsg = document.getElementById('transferStatus');
+    if (currentQuartzySelection.length === 0) return;
+
+    statusMsg.style.display = 'block';
+    statusMsg.innerText = "Saving items to storage...";
+    statusMsg.style.color = "#666";
+
+    chrome.storage.local.set({ 'vwr_order_queue': currentQuartzySelection }, () => {
+      statusMsg.innerText = "Opening VWR Quick Order...";
+      chrome.tabs.create({ url: "https://www.avantorsciences.com/us/en/my-account/quick-order" }, () => {
         statusMsg.style.display = 'none';
       });
     });
