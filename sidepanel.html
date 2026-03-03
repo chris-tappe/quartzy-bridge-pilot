@@ -249,10 +249,10 @@
     }
 
     .item-title {
-      font-size: 16px;
+      font-size: 13px;
       line-height: 1.4;
-      font-weight: 700;
-      color: #111827;
+      font-weight: 500;
+      color: #6b7280;
       margin-bottom: 4px;
     }
 
@@ -268,6 +268,23 @@
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: #6b7280;
+    }
+
+    .vendor-result-block {
+      padding-bottom: 2px;
+    }
+
+    .vendor-price-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .vendor-price-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
     }
 
     .helper-text {
@@ -454,28 +471,47 @@
         </div>
       </div>
 
-      <div id="vendorPrices" style="margin-top: 12px; display: flex; flex-direction: column; gap: 10px;">
-        <!-- Fisher Result -->
-        <div id="fisherResult" style="display: none;">
+      <div id="vendorPrices" style="margin-top: 12px; display: flex; flex-direction: column; gap: 14px;">
+        <!-- Fisher Result: always show when result card is visible -->
+        <div id="fisherResult" class="vendor-result-block">
           <div class="vendor-label">Fisher Scientific</div>
-          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 2px;">
-            <div id="fisherPriceVal" class="price-primary">--</div>
-            <button id="addFisherToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
+          <div id="fisherContent" style="margin-top: 4px;">
+            <div id="fisherPriceContent" style="display: none;">
+              <div class="vendor-price-row">
+                <div id="fisherPriceVal" class="price-primary">--</div>
+                <button id="addFisherToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
+              </div>
+            </div>
+            <div id="fisherNoTab" style="display: none;">
+              <p class="helper-text" style="margin: 0 0 6px 0;">No Fisher tab open.</p>
+              <button id="openFisherTabBtn" class="btn-ghost">Open Fisher to search</button>
+            </div>
+            <div id="fisherNoPrice" class="helper-text" style="display: none;">No price found.</div>
+            <div id="fisherLoading" class="helper-text" style="display: none;">Querying...</div>
           </div>
         </div>
 
-        <!-- VWR Result -->
-        <div id="vwrResult" style="display: none;">
+        <!-- VWR Result: always show when result card is visible -->
+        <div id="vwrResult" class="vendor-result-block">
           <div class="vendor-label">VWR / Avantor</div>
-          <div id="vwrPriceList" style="margin-top: 2px; display: flex; flex-direction: column; gap: 2px;">
-            <!-- Multi-prices will be injected here -->
-            <div id="vwrPriceVal" class="price-primary">--</div>
+          <div id="vwrContent" style="margin-top: 4px;">
+            <div id="vwrPriceContent" style="display: none;">
+              <div class="vendor-price-row">
+                <div id="vwrPriceList" class="vendor-price-list"></div>
+                <button id="addVwrToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
+              </div>
+            </div>
+            <div id="vwrNoTab" style="display: none;">
+              <p class="helper-text" style="margin: 0 0 6px 0;">No VWR tab open.</p>
+              <button id="openVwrTabBtn" class="btn-ghost">Open VWR to search</button>
+            </div>
+            <div id="vwrNoPrice" class="helper-text" style="display: none;">No price found.</div>
+            <div id="vwrLoading" class="helper-text" style="display: none;">Querying...</div>
           </div>
-          <button id="addVwrToListBtn" class="btn-ghost" style="margin-top: 4px; display: none;">Add to Request List</button>
         </div>
       </div>
 
-      <button id="addToListBtn" class="btn-primary" style="margin-top: 14px;">
+      <button id="addToListBtn" class="btn-primary" style="margin-top: 14px; display: none;">
         Add to Request List
       </button>
       <p id="addToListStatus" class="helper-success" style="display:none;">Added to list!</p>
@@ -488,7 +524,6 @@
         <input type="text" id="quartzyInput" class="input" placeholder="e.g. 07-200-571">
         <button id="fetchBridgeBtn" class="btn-primary" style="margin-top: 10px;">Fetch Price (via Bridge)</button>
         <button id="openVendorTabBtn" class="btn-secondary" style="margin-top: 8px; display:none;">Open Vendor to search</button>
-        <button id="retryVendorSearchBtn" class="btn-ghost" style="margin-top: 4px; display:none;">Retry search</button>
         <p id="bridgeStatus" class="helper-text" style="display:none;">Searching vendor tabs...</p>
       </div>
 
