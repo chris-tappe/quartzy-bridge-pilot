@@ -391,15 +391,21 @@ async function fetchVwrPrice(catNum) {
       // Fallback: take the first one
       if (!row) row = data.productRows[0];
 
-      if (row && row.prices && row.prices[0]) {
+      if (row && row.prices && row.prices.length > 0) {
         return {
           success: true,
           vendor: "VWR",
           data: {
             catalogNumber: row.catalogNumber || catNum,
             vwrCode: row.code || vwrCode,
-            price: row.prices[0].formattedDisplayPrice,
             itemName: row.name || data.description,
+            // Return all available prices
+            prices: row.prices.map(p => ({
+              price: p.formattedDisplayPrice,
+              unitSize: p.uomDescription || "Each"
+            })),
+            // Maintain single price/unitSize for backward compatibility or simple UI
+            price: row.prices[0].formattedDisplayPrice,
             unitSize: row.prices[0].uomDescription || "Each"
           }
         };

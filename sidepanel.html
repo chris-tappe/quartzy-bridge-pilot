@@ -148,8 +148,11 @@
 
       <!-- VWR Result -->
       <div id="vwrResult" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
-        <div class="data-label">VWR Price</div>
-        <div id="vwrPriceVal" class="data-value" style="color: #1e7e34; margin-bottom: 4px;">--</div>
+        <div class="data-label">VWR Pricing</div>
+        <div id="vwrPriceList" style="margin-bottom: 8px;">
+          <!-- Multi-prices will be injected here -->
+          <div id="vwrPriceVal" class="data-value" style="color: #1e7e34; margin-bottom: 4px;">--</div>
+        </div>
         <button id="addVwrToListBtn" class="populate-item-btn"
           style="padding: 4px; font-size: 11px; width: auto; display: none;">Add to Request List</button>
       </div>
@@ -159,9 +162,11 @@
       <div class="divider"></div>
       <div class="data-label">Item Name</div>
       <div id="itemNameVal" class="data-value" style="font-size: 14px;">--</div>
-      <div class="divider"></div>
-      <div class="data-label">Unit Size</div>
-      <div id="unitSizeVal" class="data-value" style="font-size: 14px;">--</div>
+      <div id="unitSizeSection">
+        <div class="divider"></div>
+        <div class="data-label">Unit Size</div>
+        <div id="unitSizeVal" class="data-value" style="font-size: 14px;">--</div>
+      </div>
 
       <button id="addToListBtn" style="margin-top: 15px;">
         Add to Request List
@@ -172,7 +177,7 @@
 
   <div id="quartzy-view" style="display: none;">
     <div class="card">
-      <p style="font-size: 13px; margin-top: 0; margin-bottom: 8px;">Enter Fisher Catalog Number:</p>
+      <p style="font-size: 13px; margin-top: 0; margin-bottom: 8px;">Enter Catalog Number:</p>
       <input type="text" id="quartzyInput" placeholder="e.g. 07-200-571"
         style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px;">
       <button id="fetchBridgeBtn" style="background-color: var(--quartzy-orange);">Fetch Price (via Bridge)</button>

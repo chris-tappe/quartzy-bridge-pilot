@@ -109,7 +109,10 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   statusMsg.innerText = "Querying vendors...";
   statusMsg.style.color = "#666";
 
-  // 1. Find all relevant tabs
+  // 1. Find all relevant tabs and check if we are currently on Quartzy
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const isQuartzy = activeTab && activeTab.url.includes("quartzy.com");
+
   const fisherTabs = await chrome.tabs.query({ url: "*://*.fishersci.com/*" });
   const vwrTabs = await chrome.tabs.query({ url: ["*://*.vwr.com/*", "*://*.avantorsciences.com/*"] });
 
@@ -131,17 +134,43 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         document.getElementById('fisherResult').style.display = 'block';
         const addBtn = document.getElementById('addFisherToListBtn');
         if (addBtn) {
-          addBtn.style.display = 'block';
+          addBtn.style.display = isQuartzy ? 'none' : 'block';
           addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
         }
       } else if (response.vendor === "VWR") {
-        const el = document.getElementById('vwrPriceVal');
-        if (el) el.textContent = response.data.price;
+        const listEl = document.getElementById('vwrPriceList');
+        if (listEl) {
+          listEl.innerHTML = ''; // Clear
+          if (response.data.prices && response.data.prices.length > 0) {
+            response.data.prices.forEach(p => {
+              const div = document.createElement('div');
+              div.className = 'data-value';
+              div.style.color = '#1e7e34';
+              div.style.marginBottom = '4px';
+              div.textContent = `${p.price} (${p.unitSize})`;
+              listEl.appendChild(div);
+            });
+          } else {
+            const div = document.createElement('div');
+            div.className = 'data-value';
+            div.style.color = '#1e7e34';
+            div.textContent = response.data.price;
+            listEl.appendChild(div);
+          }
+        }
+
         document.getElementById('vwrResult').style.display = 'block';
+
+        // On Quartzy, if multiple prices, hide the 'Add to Request List' button
         const addBtn = document.getElementById('addVwrToListBtn');
         if (addBtn) {
-          addBtn.style.display = 'block';
-          addBtn.onclick = () => saveVendorItem(response.data, "VWR");
+          // If on Quartzy, always hide. If on VWR, hide only if multiple variants.
+          if (isQuartzy || (response.data.prices && response.data.prices.length > 1)) {
+            addBtn.style.display = 'none';
+          } else {
+            addBtn.style.display = 'block';
+            addBtn.onclick = () => saveVendorItem(response.data, "VWR");
+          }
         }
 
         // Capture name/size for extras if not already present
@@ -161,18 +190,37 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         if (sharedExtras) {
           document.getElementById('extraDataFields').style.display = 'block';
           document.getElementById('itemNameVal').textContent = sharedExtras.itemName;
+          const unitSection = document.getElementById('unitSizeSection');
+          if (unitSection) unitSection.style.display = isQuartzy ? 'none' : 'block';
           document.getElementById('unitSizeVal').textContent = sharedExtras.unitSize;
+
+          const addBtn = document.getElementById('addToListBtn');
+          if (addBtn) addBtn.style.display = isQuartzy ? 'none' : 'block';
         }
       }
     }
   };
 
-  // 2. Broadcast to one of each
-  if (fisherTabs.length > 0) {
-    chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
-  }
-  if (vwrTabs.length > 0) {
-    chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
+  // 2. Route based on hyphen count: exactly ONE hyphen = VWR, else Fisher
+  const hyphenCount = (catNum.match(/-/g) || []).length;
+  const isVwrFormat = hyphenCount === 1;
+
+  if (isVwrFormat) {
+    if (vwrTabs.length > 0) {
+      statusMsg.innerText = "Querying VWR...";
+      chrome.tabs.sendMessage(vwrTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
+    } else {
+      statusMsg.innerText = "Error: Please open a VWR tab to search this catalog number.";
+      statusMsg.style.color = "red";
+    }
+  } else {
+    if (fisherTabs.length > 0) {
+      statusMsg.innerText = "Querying Fisher Scientific...";
+      chrome.tabs.sendMessage(fisherTabs[0].id, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: catNum }, handleResponse);
+    } else {
+      statusMsg.innerText = "Error: Please open a Fisher Scientific tab to search this catalog number.";
+      statusMsg.style.color = "red";
+    }
   }
 
   // Timeout if no results
@@ -244,7 +292,10 @@ async function updateUI(data) {
     document.getElementById('catNum').textContent = data.catalogNumber || "--";
 
     if (isVwrOnTab) {
-      document.getElementById('vwrPriceVal').textContent = data.price || "--";
+      const listEl = document.getElementById('vwrPriceList');
+      if (listEl) {
+        listEl.innerHTML = `<div class="data-value" style="color: #1e7e34;">${data.price || "--"}</div>`;
+      }
     } else {
       document.getElementById('fisherPriceVal').textContent = data.price || "--";
     }
@@ -255,6 +306,9 @@ async function updateUI(data) {
         extraFields.style.display = 'block';
         const itemNameEl = document.getElementById('itemNameVal');
         if (itemNameEl) itemNameEl.textContent = data.itemName || "--";
+
+        const unitSection = document.getElementById('unitSizeSection');
+        if (unitSection) unitSection.style.display = isQuartzy ? 'none' : 'block';
 
         const unitSizeEl = document.getElementById('unitSizeVal');
         if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
