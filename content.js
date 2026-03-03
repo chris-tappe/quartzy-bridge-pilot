@@ -262,6 +262,31 @@ function startPolling() {
   }, 1000);
 }
 
+/**
+ * Fetch Fisher search results page HTML and parse the first result's product name.
+ * Used when we have price from API but no item name (e.g. when Bridge request comes from Quartzy).
+ */
+function fetchFisherItemNameFromSearch(catalogNumber) {
+  const searchUrl = `https://www.fishersci.com/us/en/catalog/search/products?keyword=${encodeURIComponent(catalogNumber)}`;
+  return fetch(searchUrl, { credentials: 'same-origin', redirect: 'follow' })
+    .then(r => r.text())
+    .then(html => {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const titleLink = doc.querySelector('.result_title a, .search_result_item .result_title a, [data-testid="ResultTitleLink"]');
+      let name = titleLink?.innerText?.trim() || titleLink?.textContent?.trim() || null;
+      if (!name) {
+        const h1 = doc.querySelector('h1');
+        name = h1?.innerText?.trim() || h1?.textContent?.trim() || doc.querySelector('title')?.textContent?.split('|')[0]?.trim() || null;
+      }
+      if (name) console.log('[Quartzy Bridge] Fisher item name from search/product page:', name);
+      return name;
+    })
+    .catch(err => {
+      console.warn('[Quartzy Bridge] Fisher search page fetch for name failed:', err?.message);
+      return null;
+    });
+}
+
 // Listen for Re-Scrape triggers (from Background navigation) or Bridge Requests
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "TRIGGER_SCRAPE") {
@@ -283,7 +308,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true; // Keep channel open
     } else {
-      // Fisher Pricing Logic (Existing)
+      // Fisher Pricing Logic
       const apiUrl = "https://www.fishersci.com/shop/products/service/pricing";
       const body = new URLSearchParams();
       body.append('partNumber', catalogNumber);
@@ -310,7 +335,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
 
           if (productData && productData.totalPrice) {
-            const itemName = productData.productName || productData.name || productData.description || productData.title || productData.partDescription || null;
+            let itemName = productData.productName || productData.name || productData.description || productData.title || productData.partDescription || null;
+            if (!itemName) {
+              const urlMatch = window.location.href.match(fisherUrlRegex);
+              const urlCatalog = urlMatch && urlMatch[1] ? urlMatch[1].replace(/[^a-zA-Z0-9]/g, '') : '';
+              const reqCatalog = (catalogNumber || '').replace(/[^a-zA-Z0-9]/g, '');
+              if (urlCatalog && reqCatalog && urlCatalog === reqCatalog) {
+                itemName = document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim() || null;
+              }
+              if (!itemName && (window.location.href.includes('/catalog/search') || window.location.href.includes('/shop/products/search'))) {
+                const firstResultTitle = document.querySelector('.result_title a, .search_result_item .result_title a, [data-testid="ResultTitleLink"]');
+                if (firstResultTitle) itemName = firstResultTitle.innerText?.trim() || null;
+              }
+            }
+            if (!itemName) {
+              return fetchFisherItemNameFromSearch(catalogNumber).then(nameFromSearch => {
+                itemName = nameFromSearch || itemName;
+                sendResponse({
+                  success: true,
+                  vendor: "Fisher Scientific",
+                  data: {
+                    catalogNumber: catalogNumber,
+                    price: productData.totalPrice,
+                    itemName: itemName || undefined
+                  }
+                });
+              });
+            }
             sendResponse({
               success: true,
               vendor: "Fisher Scientific",
