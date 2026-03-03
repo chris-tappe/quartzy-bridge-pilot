@@ -159,13 +159,32 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
       const el = document.getElementById('fisherPriceVal');
       if (el) el.textContent = response.data.price || "--";
       fisherPriceContent.style.display = 'block';
+      const nameEl = document.getElementById('fisherItemName');
+      if (nameEl) {
+        if (response.data.itemName) {
+          nameEl.textContent = response.data.itemName;
+          nameEl.style.display = 'block';
+        } else {
+          nameEl.style.display = 'none';
+        }
+      }
       const addBtn = document.getElementById('addFisherToListBtn');
       if (addBtn) {
         addBtn.style.display = 'none';
         addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
       }
-      if (!sharedExtras && response.data.itemName) {
-        sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
+      const openBtn = document.getElementById('fisherOpenInTabBtn');
+      if (openBtn && fisherTabs.length > 0) {
+        openBtn.style.display = 'block';
+        const catalogNumber = response.data.catalogNumber || catNum;
+        const tabId = fisherTabs[0].id;
+        openBtn.onclick = () => {
+          const url = `https://www.fishersci.com/shop/products/search?keyword=${encodeURIComponent(catalogNumber)}`;
+          chrome.tabs.update(tabId, { url });
+        };
+      }
+      if (!sharedExtras && response.data.unitSize) {
+        sharedExtras = { unitSize: response.data.unitSize };
         maybeShowExtras();
       }
     } else {
@@ -198,13 +217,32 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         }
       }
       vwrPriceContent.style.display = 'block';
+      const nameEl = document.getElementById('vwrItemName');
+      if (nameEl) {
+        if (response.data.itemName) {
+          nameEl.textContent = response.data.itemName;
+          nameEl.style.display = 'block';
+        } else {
+          nameEl.style.display = 'none';
+        }
+      }
       const addBtn = document.getElementById('addVwrToListBtn');
       if (addBtn) {
         addBtn.style.display = 'none';
         addBtn.onclick = () => saveVendorItem(response.data, "VWR");
       }
-      if (!sharedExtras && response.data.itemName) {
-        sharedExtras = { itemName: response.data.itemName, unitSize: response.data.unitSize };
+      const openBtn = document.getElementById('vwrOpenInTabBtn');
+      if (openBtn && vwrTabs.length > 0) {
+        openBtn.style.display = 'block';
+        const catalogNumber = response.data.catalogNumber || catNum;
+        const tabId = vwrTabs[0].id;
+        openBtn.onclick = () => {
+          const url = `https://us.vwr.com/store/search?label=${encodeURIComponent(catalogNumber)}`;
+          chrome.tabs.update(tabId, { url });
+        };
+      }
+      if (!sharedExtras && response.data.unitSize) {
+        sharedExtras = { unitSize: response.data.unitSize };
         maybeShowExtras();
       }
     } else {
@@ -297,11 +335,10 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   lastVendorSearch = { catalogNumber: catNum };
   if (pending === 0) checkDone();
 
-  // Show shared item name / unit size when we have them from either vendor
+  // Show shared unit size when we have it from either vendor (item names are shown per-vendor)
   function maybeShowExtras() {
     if (!sharedExtras) return;
     document.getElementById('extraDataFields').style.display = 'block';
-    document.getElementById('itemNameVal').textContent = sharedExtras.itemName || "--";
     const unitSection = document.getElementById('unitSizeSection');
     if (unitSection) unitSection.style.display = isQuartzy ? 'none' : 'block';
     document.getElementById('unitSizeVal').textContent = sharedExtras.unitSize || "--";
@@ -371,9 +408,8 @@ function saveVendorItem(itemData, vendorName) {
     url: vendorName === "VWR" ? `https://us.vwr.com/store/search?label=${itemData.catalogNumber}` : `https://www.fishersci.com/shop/products/search?keyword=${itemData.catalogNumber}`
   };
 
-  // Check if we have extras on the page
-  const nameEl = document.getElementById('itemNameVal');
-  if (nameEl && nameEl.textContent !== "--") fullData.itemName = nameEl.textContent;
+  // Use item name from the vendor result we're saving (already in itemData)
+  if (itemData.itemName) fullData.itemName = itemData.itemName;
   const sizeEl = document.getElementById('unitSizeVal');
   if (sizeEl && sizeEl.textContent !== "--") fullData.unitSize = sizeEl.textContent;
 
@@ -440,21 +476,35 @@ async function updateUI(data) {
 
     const extraFields = document.getElementById('extraDataFields');
     if (extraFields) {
-      if (data.itemName) {
+      if (data.itemName || data.unitSize) {
         extraFields.style.display = 'block';
-        const itemNameEl = document.getElementById('itemNameVal');
-        if (itemNameEl) itemNameEl.textContent = data.itemName || "--";
-
         const unitSection = document.getElementById('unitSizeSection');
         if (unitSection) unitSection.style.display = isQuartzy ? 'none' : 'block';
-
         const unitSizeEl = document.getElementById('unitSizeVal');
         if (unitSizeEl) unitSizeEl.textContent = data.unitSize || "--";
-
         const addBtn = document.getElementById('addToListBtn');
         if (addBtn) addBtn.style.display = isQuartzy ? 'none' : 'block';
       } else {
         extraFields.style.display = 'none';
+      }
+    }
+    // Per-vendor item name (when viewing side panel on a vendor tab)
+    const fisherNameEl = document.getElementById('fisherItemName');
+    const vwrNameEl = document.getElementById('vwrItemName');
+    if (fisherNameEl) {
+      if (isFisherOnTab && data.itemName) {
+        fisherNameEl.textContent = data.itemName;
+        fisherNameEl.style.display = 'block';
+      } else {
+        fisherNameEl.style.display = 'none';
+      }
+    }
+    if (vwrNameEl) {
+      if (isVwrOnTab && data.itemName) {
+        vwrNameEl.textContent = data.itemName;
+        vwrNameEl.style.display = 'block';
+      } else {
+        vwrNameEl.style.display = 'none';
       }
     }
   }

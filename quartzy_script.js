@@ -30,27 +30,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 /**
  * Find the first search result's catalog number in a Fisher search results document.
- * Looks for .qa-part-number or text matching Fisher catalog format (e.g. XX-XXX-XXX).
+ * Prefers data attributes on the search result row/link (data-childPartNumbers, data-part-list),
+ * then product links, then legacy selectors.
  */
 function parseFirstFisherCatalogFromDoc(doc) {
     const fisherCatalogPattern = /^\d{2}-\d{3}-\d{3,}$|^[A-Z0-9]{5,}$|^p-\d+$/i;
+
+    function normalizeCatalog(val) {
+        if (val == null || typeof val !== "string") return null;
+        const s = val.trim();
+        const first = s.indexOf(",") >= 0 ? s.split(",")[0].trim() : s;
+        return first && fisherCatalogPattern.test(first) ? first : null;
+    }
+
+    // 1) First search result row: data-childPartNumbers (e.g. " 50995054 " or "50995054,12034013")
+    const firstRow = doc.querySelector(".search_result_item[data-childPartNumbers], [id^='search-result-'][data-childPartNumbers]");
+    if (firstRow) {
+        const val = firstRow.getAttribute("data-childPartNumbers");
+        const catalog = normalizeCatalog(val);
+        if (catalog) return catalog;
+    }
+
+    // 2) First result title link: data-part-list (e.g. " 50995054 ")
+    const partListLink = doc.querySelector('a[data-part-list][href*="/shop/products/"]');
+    if (partListLink) {
+        const val = partListLink.getAttribute("data-part-list");
+        const catalog = normalizeCatalog(val);
+        if (catalog) return catalog;
+    }
+
+    // 3) Legacy: .qa-part-number
     const byQaPart = doc.querySelector(".qa-part-number");
     if (byQaPart) {
         const text = (byQaPart.textContent || "").trim();
         if (text) return text;
     }
+
+    // 4) Other part-number elements
     const partNumbers = doc.querySelectorAll("[class*='part-number'], [class*='partNumber'], [data-part-number]");
     for (const el of partNumbers) {
         const text = (el.textContent || el.getAttribute("data-part-number") || "").trim();
         if (text && fisherCatalogPattern.test(text)) return text;
     }
+
+    // 5) Product links: extract from path and strip hash/query (e.g. .../50995054#?keyword=C2987I)
     const links = doc.querySelectorAll('a[href*="/shop/products/"], a[href*="/catalog/search/products/"]');
     for (const a of links) {
-        const href = a.getAttribute("href") || "";
-        const segment = href.split("/").filter(Boolean).pop();
-        const catalog = segment ? segment.replace(/\.html$/, "").split("?")[0] : null;
+        const href = (a.getAttribute("href") || "").trim();
+        const path = href.split("?")[0].split("#")[0];
+        const segment = path.split("/").filter(Boolean).pop();
+        const catalog = segment ? segment.replace(/\.html$/, "").trim() : null;
         if (catalog && catalog !== "products" && fisherCatalogPattern.test(catalog)) return catalog;
     }
+
+    // 6) Body text fallback
     const bodyText = doc.body ? doc.body.innerText : "";
     const match = bodyText.match(/\b(\d{2}-\d{3}-\d{3,})\b/) || bodyText.match(/\b([A-Z]{2}\d{5,})\b/) || bodyText.match(/\b(p-\d+)\b/i);
     return match ? match[1] : null;

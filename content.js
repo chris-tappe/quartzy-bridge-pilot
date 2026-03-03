@@ -310,10 +310,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
 
           if (productData && productData.totalPrice) {
+            const itemName = productData.productName || productData.name || productData.description || productData.title || productData.partDescription || null;
             sendResponse({
               success: true,
               vendor: "Fisher Scientific",
-              data: { catalogNumber: catalogNumber, price: productData.totalPrice }
+              data: {
+                catalogNumber: catalogNumber,
+                price: productData.totalPrice,
+                itemName: itemName || undefined
+              }
             });
           } else {
             sendResponse({ success: false, error: "Price not found in Fisher API response" });

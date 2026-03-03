@@ -262,6 +262,13 @@
       color: #16a34a;
     }
 
+    .vendor-item-name {
+      font-size: 12px;
+      line-height: 1.35;
+      color: #374151;
+      margin-bottom: 4px;
+    }
+
     .vendor-label {
       font-size: 11px;
       font-weight: 600;
@@ -461,10 +468,6 @@
 
       <div id="extraDataFields" style="display: none;">
         <div class="divider"></div>
-        <div>
-          <div class="data-label">Item Name</div>
-          <div id="itemNameVal" class="item-title">--</div>
-        </div>
         <div id="unitSizeSection" style="margin-top: 8px;">
           <div class="data-label">Unit Size</div>
           <div id="unitSizeVal" class="data-value">--</div>
@@ -477,10 +480,12 @@
           <div class="vendor-label">Fisher Scientific</div>
           <div id="fisherContent" style="margin-top: 4px;">
             <div id="fisherPriceContent" style="display: none;">
+              <div id="fisherItemName" class="vendor-item-name" style="display: none;"></div>
               <div class="vendor-price-row">
                 <div id="fisherPriceVal" class="price-primary">--</div>
                 <button id="addFisherToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
               </div>
+              <button id="fisherOpenInTabBtn" class="btn-ghost vendor-open-btn" style="display: none; margin-top: 4px;">Open in Fisher tab</button>
             </div>
             <div id="fisherNoTab" style="display: none;">
               <p class="helper-text" style="margin: 0 0 6px 0;">No Fisher tab open.</p>
@@ -496,10 +501,12 @@
           <div class="vendor-label">VWR / Avantor</div>
           <div id="vwrContent" style="margin-top: 4px;">
             <div id="vwrPriceContent" style="display: none;">
+              <div id="vwrItemName" class="vendor-item-name" style="display: none;"></div>
               <div class="vendor-price-row">
                 <div id="vwrPriceList" class="vendor-price-list"></div>
                 <button id="addVwrToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
               </div>
+              <button id="vwrOpenInTabBtn" class="btn-ghost vendor-open-btn" style="display: none; margin-top: 4px;">Open in VWR tab</button>
             </div>
             <div id="vwrNoTab" style="display: none;">
               <p class="helper-text" style="margin: 0 0 6px 0;">No VWR tab open.</p>
