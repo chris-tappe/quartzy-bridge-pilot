@@ -347,41 +347,59 @@ function renderSavedRequestsList() {
     const list = result.saved_requests || [];
 
     if (list.length === 0) {
-      container.innerHTML = 'No items added yet. Search Fisher/VWR and click "Add to Request List".';
+      container.innerHTML = '<div class="request-list-empty">No items added yet. Search a vendor and click "Add to Request List".</div>';
       if (clearBtn) clearBtn.style.display = 'none';
       return;
     }
 
     if (clearBtn) clearBtn.style.display = 'block';
 
-    const COPY_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+    const COPY_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 
     container.innerHTML = list.map((item, index) => `
-      <div style="border: 1px solid #ddd; background: #fff; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
-        <div style="font-weight: bold; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: flex-start;">
-           <span style="display:flex; align-items:flex-start;">
-             <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; display: inline-block;" title="${item.itemName}">${item.itemName || 'Unknown'}</span>
-             <button class="copy-btn copy-item" data-val="${item.itemName || ''}" title="Copy Name">${COPY_SVG}</button>
-           </span>
-           <button class="remove-item-btn" data-index="${index}" style="background: transparent; color: #cc0000; border: none; padding: 0; cursor: pointer; font-size: 14px; width: auto; margin-left: 8px;" title="Remove">&times;</button>
+      <div class="request-item">
+        <div class="request-item-header">
+          <span class="request-item-name" title="${item.itemName || ''}">${item.itemName || 'Unknown'}</span>
+          <button class="icon-btn remove-item-btn" data-index="${index}" title="Remove">
+            &times;
+          </button>
         </div>
-        <div style="font-size: 11px; color: #666; margin-bottom: 4px;"><strong>Vendor:</strong> ${item.vendor || 'Unknown'}</div>
-        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
-          <strong>Cat #:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.catalogNumber} <button class="copy-btn copy-item" data-val="${item.catalogNumber}" title="Copy">${COPY_SVG}</button></span>
+
+        <div class="request-item-meta" style="margin-top:2px;">
+          <span><strong>Vendor:</strong> ${item.vendor || 'Unknown'}</span>
+          <span class="request-item-price">${item.price}</span>
         </div>
-        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
-          <strong>Price:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.price} <button class="copy-btn copy-item" data-val="${item.price}" title="Copy">${COPY_SVG}</button></span>
+
+        <div class="request-item-meta" style="margin-top:2px; justify-content:space-between;">
+          <span>
+            <strong>Cat #:</strong>
+            <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+              ${item.catalogNumber}
+            </span>
+          </span>
+          <button class="icon-btn copy-item" data-val="${item.catalogNumber}" title="Copy catalog number">
+            ${COPY_SVG}
+          </button>
         </div>
-        <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 2px;">
-          <strong>Size:</strong> <span style="display:flex; align-items:center; margin-left:4px;">${item.unitSize || '--'} <button class="copy-btn copy-item" data-val="${item.unitSize || ''}" title="Copy">${COPY_SVG}</button></span>
+
+        <div class="request-item-meta" style="margin-top:2px;">
+          <span><strong>Size:</strong> ${item.unitSize || '--'}</span>
         </div>
+
         ${item.url ? `
-        <div style="display: flex; align-items: center; justify-content: flex-start; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px;">
-           <a href="${item.url}" target="_blank" style="color: #0055a4; text-decoration: none;">View Item Page</a>
-           <button class="copy-btn copy-item" data-val="${item.url}" title="Copy Link">${COPY_SVG}</button>
+        <div class="request-item-footer">
+           <a href="${item.url}" target="_blank" class="request-item-link">
+             View item page
+           </a>
+           <button class="icon-btn copy-item" data-val="${item.url}" title="Copy link">
+             ${COPY_SVG}
+           </button>
         </div>
         ` : ''}
-        <button class="populate-item-btn" data-index="${index}" style="margin-top: 8px; width: 100%; padding: 4px; font-weight: bold; background-color: #f1662a; color: white; border: none; border-radius: 4px; cursor: pointer;">Populate Request</button>
+
+        <button class="btn-primary populate-item-btn" data-index="${index}" style="margin-top: 8px;">
+          Populate Request
+        </button>
       </div>
     `).join('');
 

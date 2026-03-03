@@ -6,10 +6,16 @@
   <style>
     :root {
       --quartzy-blue: #0099d8;
-      --quartzy-orange: #f1662a;
+      --quartzy-orange: #FF5A1F;
+      --quartzy-orange-dark: #E04F1A;
       --bg-gray: #f9fafb;
-      --text-dark: #333;
+      --text-dark: #111827;
+      --text-muted: #6b7280;
+      --border-subtle: #e5e7eb;
+      --shadow-soft: 0 1px 3px rgba(15, 23, 42, 0.08);
     }
+
+    /* Global layout */
 
     .copy-btn {
       background: transparent;
@@ -29,19 +35,38 @@
     }
 
     body {
-      width: 320px;
+      width: 340px;
       margin: 0;
-      padding: 20px;
+      padding: 16px;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background-color: var(--bg-gray);
       color: var(--text-dark);
+      box-sizing: border-box;
     }
+
+    .panel-root {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Header */
 
     .header {
       display: flex;
       align-items: center;
       gap: 12px;
-      margin-bottom: 24px;
+      padding: 10px 12px;
+      background-color: #ffffff;
+      border-radius: 10px;
+      box-shadow: var(--shadow-soft);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .header-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .logo {
@@ -50,160 +75,446 @@
     }
 
     h2 {
-      font-size: 18px;
+      font-size: 16px;
       margin: 0;
-      color: #111;
+      color: #111827;
     }
 
     .status-pill {
       display: inline-block;
-      padding: 4px 10px;
-      border-radius: 12px;
-      background: #e6f4ea;
-      color: #1e7e34;
-      font-size: 11px;
-      font-weight: bold;
-      margin-bottom: 20px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #ecfdf3;
+      color: #15803d;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
     }
+
+    .header-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin: 2px 0 0 0;
+    }
+
+    /* Cards / sections */
 
     .card {
       background: white;
-      border-radius: 8px;
-      padding: 16px;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-      border: 1px solid #eee;
-      margin-bottom: 20px;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: var(--shadow-soft);
+      border: none;
     }
+
+    .card + .card {
+      margin-top: 8px;
+    }
+
+    /* Buttons */
 
     button {
+      font-family: inherit;
+    }
+
+    .btn-primary {
       width: 100%;
-      background-color: var(--quartzy-blue);
-      color: white;
+      background-color: var(--quartzy-orange);
+      color: #ffffff;
       border: none;
       padding: 12px;
-      border-radius: 6px;
+      border-radius: 8px;
       font-weight: 600;
+      font-size: 13px;
       cursor: pointer;
-      transition: background 0.2s;
+      box-shadow: var(--shadow-soft);
+      transition: background-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
     }
 
-    button:hover {
-      background-color: #007bb1;
+    .btn-primary:hover {
+      background-color: var(--quartzy-orange-dark);
+      transform: translateY(-0.5px);
+      box-shadow: 0 4px 6px rgba(15, 23, 42, 0.12);
     }
 
-    button:active {
-      background-color: #005f87;
+    .btn-primary:active {
+      transform: translateY(0);
+      box-shadow: var(--shadow-soft);
     }
 
-    #resultArea {
-      margin-top: 20px;
-      display: none;
+    .btn-secondary {
+      width: 100%;
+      background-color: #16a34a;
+      color: #ffffff;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      box-shadow: var(--shadow-soft);
+      transition: background-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
     }
+
+    .btn-secondary:hover {
+      background-color: #15803d;
+      transform: translateY(-0.5px);
+      box-shadow: 0 4px 6px rgba(15, 23, 42, 0.12);
+    }
+
+    .btn-secondary:active {
+      transform: translateY(0);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .btn-ghost {
+      border: none;
+      background: transparent;
+      color: var(--quartzy-orange);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+
+    .btn-ghost:hover {
+      background-color: rgba(255, 90, 31, 0.08);
+      color: var(--quartzy-orange-dark);
+    }
+
+    .btn-danger-text {
+      border: none;
+      background: transparent;
+      color: #dc2626;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 0;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .btn-danger-text:hover {
+      color: #b91c1c;
+    }
+
+    /* Inputs */
+
+    .input {
+      width: 100%;
+      padding: 8px 10px;
+      box-sizing: border-box;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 13px;
+      color: var(--text-dark);
+      background-color: #ffffff;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .input::placeholder {
+      color: #9ca3af;
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: var(--quartzy-orange);
+      box-shadow: 0 0 0 1px rgba(255, 90, 31, 0.5);
+    }
+
+    /* Data / labels / typography */
 
     .data-label {
-      font-size: 12px;
-      color: #666;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #6b7280;
       margin-bottom: 4px;
     }
 
     .data-value {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #111827;
+    }
+
+    .catalog-value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+      color: #374151;
+    }
+
+    .item-title {
       font-size: 16px;
-      font-weight: bold;
-      margin-bottom: 12px;
+      line-height: 1.4;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 4px;
+    }
+
+    .price-primary {
+      font-size: 15px;
+      font-weight: 700;
+      color: #16a34a;
+    }
+
+    .vendor-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #6b7280;
+    }
+
+    .helper-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+
+    .helper-success {
+      font-size: 11px;
+      color: #15803d;
+      margin-top: 8px;
     }
 
     .divider {
       height: 1px;
-      background: #eee;
+      background: var(--border-subtle);
       margin: 12px 0;
+    }
+
+    /* Request list */
+
+    #savedRequestsList {
+      font-size: 12px;
+      color: #4b5563;
+    }
+
+    .request-list-empty {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .request-item {
+      padding: 10px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .request-item:not(:first-child) {
+      border-top: 1px solid #f3f4f6;
+    }
+
+    .request-item-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .request-item-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #111827;
+      max-width: 180px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .request-item-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .request-item-meta strong {
+      font-weight: 500;
+      color: #4b5563;
+    }
+
+    .request-item-price {
+      margin-left: auto;
+      font-weight: 600;
+      color: #16a34a;
+      font-size: 12px;
+    }
+
+    .request-item-footer {
+      margin-top: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .request-item-link {
+      font-size: 11px;
+      color: #2563eb;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .request-item-link:hover {
+      text-decoration: underline;
+    }
+
+    .icon-btn {
+      border: none;
+      background: transparent;
+      padding: 2px;
+      border-radius: 999px;
+      cursor: pointer;
+      color: #9ca3af;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
+      opacity: 0.7;
+    }
+
+    .icon-btn:hover {
+      color: #4b5563;
+      background-color: #f3f4f6;
+      opacity: 1;
+    }
+
+    .request-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Bulk transfer items */
+    .bulk-item {
+      display: flex;
+      flex-direction: column;
+      padding: 6px 0;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    .bulk-item-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #374151;
+    }
+
+    .bulk-item-meta {
+      font-size: 10px;
+      color: #9ca3af;
     }
   </style>
 </head>
 
 <body>
-  <div class="header">
-    <img src="images/icon48.png" alt="Logo" class="logo">
-    <h2>Bridge Pilot</h2>
-  </div>
-
-  <span class="status-pill">&bull; ACTIVE</span>
-
-  <div id="fisher-view" style="display: none;">
-  </div>
-
-  <div id="resultArea" class="card" style="display: none;">
-    <div id="catNumSection">
-      <div class="data-label">Catalog Number</div>
-      <div id="catNum" class="data-value">--</div>
-    </div>
-
-    <div id="vendorPrices">
-      <!-- Fisher Result -->
-      <div id="fisherResult" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
-        <div class="data-label">Fisher Scientific Price</div>
-        <div id="fisherPriceVal" class="data-value" style="color: #0055a4; margin-bottom: 4px;">--</div>
-        <button id="addFisherToListBtn" class="populate-item-btn"
-          style="padding: 4px; font-size: 11px; width: auto; display: none;">Add to Request List</button>
-      </div>
-
-      <!-- VWR Result -->
-      <div id="vwrResult" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
-        <div class="data-label">VWR Pricing</div>
-        <div id="vwrPriceList" style="margin-bottom: 8px;">
-          <!-- Multi-prices will be injected here -->
-          <div id="vwrPriceVal" class="data-value" style="color: #1e7e34; margin-bottom: 4px;">--</div>
+  <div class="panel-root">
+    <div class="header">
+      <div class="header-main">
+        <img src="images/icon48.png" alt="Logo" class="logo">
+        <div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <h2>Bridge Pilot</h2>
+            <span class="status-pill">&bull; ACTIVE</span>
+          </div>
+          <p class="header-subtitle">Bridge between Quartzy and vendor product pages.</p>
         </div>
-        <button id="addVwrToListBtn" class="populate-item-btn"
-          style="padding: 4px; font-size: 11px; width: auto; display: none;">Add to Request List</button>
       </div>
     </div>
 
-    <div id="extraDataFields" style="display: none;">
-      <div class="divider"></div>
-      <div class="data-label">Item Name</div>
-      <div id="itemNameVal" class="data-value" style="font-size: 14px;">--</div>
-      <div id="unitSizeSection">
-        <div class="divider"></div>
-        <div class="data-label">Unit Size</div>
-        <div id="unitSizeVal" class="data-value" style="font-size: 14px;">--</div>
+    <div id="fisher-view" style="display: none;"></div>
+
+    <!-- Vendor / On-demand pricing view -->
+    <div id="resultArea" class="card" style="display: none;">
+      <div id="catNumSection" style="margin-bottom: 8px;">
+        <div class="data-label">Catalog Number</div>
+        <div id="catNum" class="catalog-value">--</div>
       </div>
 
-      <button id="addToListBtn" style="margin-top: 15px;">
+      <div id="extraDataFields" style="display: none;">
+        <div class="divider"></div>
+        <div>
+          <div class="data-label">Item Name</div>
+          <div id="itemNameVal" class="item-title">--</div>
+        </div>
+        <div id="unitSizeSection" style="margin-top: 8px;">
+          <div class="data-label">Unit Size</div>
+          <div id="unitSizeVal" class="data-value">--</div>
+        </div>
+      </div>
+
+      <div id="vendorPrices" style="margin-top: 12px; display: flex; flex-direction: column; gap: 10px;">
+        <!-- Fisher Result -->
+        <div id="fisherResult" style="display: none;">
+          <div class="vendor-label">Fisher Scientific</div>
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 2px;">
+            <div id="fisherPriceVal" class="price-primary">--</div>
+            <button id="addFisherToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
+          </div>
+        </div>
+
+        <!-- VWR Result -->
+        <div id="vwrResult" style="display: none;">
+          <div class="vendor-label">VWR / Avantor</div>
+          <div id="vwrPriceList" style="margin-top: 2px; display: flex; flex-direction: column; gap: 2px;">
+            <!-- Multi-prices will be injected here -->
+            <div id="vwrPriceVal" class="price-primary">--</div>
+          </div>
+          <button id="addVwrToListBtn" class="btn-ghost" style="margin-top: 4px; display: none;">Add to Request List</button>
+        </div>
+      </div>
+
+      <button id="addToListBtn" class="btn-primary" style="margin-top: 14px;">
         Add to Request List
       </button>
-      <p id="addToListStatus" style="font-size: 11px; color: #1e7e34; margin-top: 8px; display:none;">Added to list!</p>
-    </div>
-  </div>
-
-  <div id="quartzy-view" style="display: none;">
-    <div class="card">
-      <p style="font-size: 13px; margin-top: 0; margin-bottom: 8px;">Enter Catalog Number:</p>
-      <input type="text" id="quartzyInput" placeholder="e.g. 07-200-571"
-        style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px;">
-      <button id="fetchBridgeBtn" style="background-color: var(--quartzy-orange);">Fetch Price (via Bridge)</button>
-      <p id="bridgeStatus" style="font-size: 11px; color: #666; margin-top: 8px; display:none;">Searching for open
-        Fisher tab...</p>
+      <p id="addToListStatus" class="helper-success" style="display:none;">Added to list!</p>
     </div>
 
-    <div id="bulkTransferCard" class="card" style="margin-top: 15px; display: none;">
-      <h3 style="font-size: 14px; margin: 0 0 10px 0;">Selected Items</h3>
-      <div id="selectedItemsList"
-        style="font-size: 12px; max-height: 100px; overflow-y: auto; margin-bottom: 10px; color: #555;">
-        Check boxes in Quartzy to see items here.
+    <!-- Quartzy-side view -->
+    <div id="quartzy-view" style="display: none;">
+      <div class="card">
+        <p class="data-label" style="margin-bottom: 6px;">Enter Catalog Number</p>
+        <input type="text" id="quartzyInput" class="input" placeholder="e.g. 07-200-571">
+        <button id="fetchBridgeBtn" class="btn-primary" style="margin-top: 10px;">Fetch Price (via Bridge)</button>
+        <p id="bridgeStatus" class="helper-text" style="display:none;">Searching vendor tabs...</p>
       </div>
-      <button id="transferToFisherBtn" style="background-color: #0055a4; display: none; margin-bottom: 8px;">Transfer to
-        Fisher</button>
-      <button id="transferToVwrBtn" style="background-color: #1e7e34; display: none;">Transfer to VWR</button>
-      <p id="transferStatus" style="font-size: 11px; color: #666; margin-top: 8px; display:none;"></p>
-    </div>
-  </div>
 
-  <div class="card" style="margin-top: 15px;" id="globalRequestCard">
-    <h3 style="font-size: 14px; margin: 0 0 10px 0;">Request List</h3>
-    <div id="savedRequestsList" style="font-size: 12px; color: #555;">
-      No items added yet. Search Fisher and click "Add to Request List".
+      <div id="bulkTransferCard" class="card" style="display: none;">
+        <h3 style="font-size: 14px; margin: 0 0 8px 0;">Selected Items</h3>
+        <div id="selectedItemsList" style="font-size: 12px; max-height: 110px; overflow-y: auto; color: #4b5563;">
+          Check boxes in Quartzy to see items here.
+        </div>
+        <button id="transferToFisherBtn" class="btn-secondary" style="display: none; margin-top: 10px;">Transfer to
+          Fisher</button>
+        <button id="transferToVwrBtn" class="btn-secondary" style="display: none; margin-top: 8px;">Transfer to VWR</button>
+        <p id="transferStatus" class="helper-text" style="display:none;"></p>
+      </div>
     </div>
-    <button id="clearListBtn" style="background-color: #cc0000; display: none; margin-top: 10px;">Clear List</button>
+
+    <!-- Global Request List -->
+    <div class="card" id="globalRequestCard">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <h3 style="font-size: 14px; margin: 0;">Request List</h3>
+        <button id="clearListBtn" class="btn-danger-text" style="display: none;">Clear list</button>
+      </div>
+      <p class="helper-text" style="margin-top: 0; margin-bottom: 6px;">Saved items ready to populate into Quartzy.</p>
+      <div id="savedRequestsList">
+        <div class="request-list-empty">
+          No items added yet. Search a vendor and click "Add to Request List".
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>
