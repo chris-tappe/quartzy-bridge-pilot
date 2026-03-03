@@ -56,7 +56,7 @@ async function updateViewMode() {
   } else if (tab.url.includes("quartzy.com")) {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'block';
-    if (resultArea) resultArea.style.display = 'none';
+    // Do not hide resultArea on Quartzy so "Fetch Price" result card stays visible after opening a vendor tab
     // Let updateSelectedItemsUI handle bulkTransfer visibility
     statusPill.innerHTML = '&bull; BRIDGE MODE';
     statusPill.style.color = '#f1662a'; // Orange
@@ -117,6 +117,12 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   document.getElementById('extraDataFields').style.display = 'none';
   document.getElementById('addToListBtn').style.display = 'none';
   if (openVendorTabBtn) openVendorTabBtn.style.display = 'none';
+
+  // Always show both vendor sections; each will show one of: price, no-tab prompt, or no price found
+  const fisherBlock = document.getElementById('fisherResult');
+  const vwrBlock = document.getElementById('vwrResult');
+  if (fisherBlock) fisherBlock.style.display = 'block';
+  if (vwrBlock) vwrBlock.style.display = 'block';
 
   fisherPriceContent.style.display = 'none';
   fisherNoTab.style.display = 'none';
