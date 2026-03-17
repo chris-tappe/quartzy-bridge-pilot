@@ -203,7 +203,7 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
       }
       const addBtn = document.getElementById('addFisherToListBtn');
       if (addBtn) {
-        addBtn.style.display = 'none';
+        addBtn.style.display = isQuartzy ? 'none' : 'block';
         addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
       }
       const openBtn = document.getElementById('fisherOpenInTabBtn');
@@ -214,7 +214,7 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         openBtn.onclick = () => {
           openBtn.style.display = 'none';
           const url = `https://www.fishersci.com/us/en/catalog/search/products?keyword=${encodeURIComponent(catNum)}`;
-          chrome.tabs.update(tabId, { url });
+          chrome.tabs.update(tabId, { url, active: true });
           const onTabUpdated = (tid, changeInfo) => {
             if (tid !== tabId || changeInfo.status !== 'complete') return;
             chrome.tabs.onUpdated.removeListener(onTabUpdated);
@@ -311,7 +311,7 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
       }
       const addBtn = document.getElementById('addVwrToListBtn');
       if (addBtn) {
-        addBtn.style.display = 'none';
+        addBtn.style.display = isQuartzy ? 'none' : 'block';
         addBtn.onclick = () => saveVendorItem(response.data, "VWR");
       }
       const openBtn = document.getElementById('vwrOpenInTabBtn');
@@ -322,7 +322,7 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
         openBtn.onclick = () => {
           openBtn.style.display = 'none';
           const url = `https://www.avantorsciences.com/us/en/search/${encodeURIComponent(catNum)}`;
-          chrome.tabs.update(tabId, { url });
+          chrome.tabs.update(tabId, { url, active: true });
           const onTabUpdated = (tid, changeInfo) => {
             if (tid !== tabId || changeInfo.status !== 'complete') return;
             chrome.tabs.onUpdated.removeListener(onTabUpdated);
@@ -500,13 +500,183 @@ document.getElementById('fetchBridgeBtn').addEventListener('click', async () => 
   }, 8000);
 });
 
-function openVendorAndPrompt(vendor, statusMsg) {
+function applyFisherResultFromOpenTab(response, catNum) {
+  const fisherPriceContent = document.getElementById('fisherPriceContent');
+  const fisherNoPrice = document.getElementById('fisherNoPrice');
+  const fisherLoading = document.getElementById('fisherLoading');
+  fisherLoading.style.display = 'none';
+  if (response && response.success && response.vendor === "Fisher Scientific" && response.data?.price) {
+    const el = document.getElementById('fisherPriceVal');
+    if (el) el.textContent = response.data.price || "--";
+    fisherPriceContent.style.display = 'block';
+    const catalogEl = document.getElementById('fisherCatalogNum');
+    if (catalogEl) {
+      const cn = response.data.catalogNumber || catNum;
+      catalogEl.textContent = cn ? `Catalog: ${cn}` : "";
+      catalogEl.style.display = cn ? 'block' : 'none';
+    }
+    const nameEl = document.getElementById('fisherItemName');
+    if (nameEl && response.data.itemName) {
+      nameEl.textContent = response.data.itemName;
+      nameEl.style.display = 'block';
+    }
+    const addBtn = document.getElementById('addFisherToListBtn');
+    if (addBtn) {
+      addBtn.style.display = 'none';
+      addBtn.onclick = () => saveVendorItem(response.data, "Fisher Scientific");
+    }
+    if (response.data.unitSize) {
+      const extraFields = document.getElementById('extraDataFields');
+      if (extraFields) {
+        extraFields.style.display = 'block';
+        const unitEl = document.getElementById('unitSizeVal');
+        if (unitEl) unitEl.textContent = response.data.unitSize;
+      }
+    }
+  } else {
+    fisherNoPrice.style.display = 'block';
+  }
+}
+
+function applyVwrResultFromOpenTab(response, catNum) {
+  const vwrPriceContent = document.getElementById('vwrPriceContent');
+  const vwrNoPrice = document.getElementById('vwrNoPrice');
+  const vwrLoading = document.getElementById('vwrLoading');
+  vwrLoading.style.display = 'none';
+  if (response && response.success && response.vendor === "VWR" && (response.data?.price || response.data?.prices?.length)) {
+    const listEl = document.getElementById('vwrPriceList');
+    if (listEl) {
+      listEl.innerHTML = '';
+      if (response.data.prices?.length) {
+        response.data.prices.forEach(p => {
+          const div = document.createElement('div');
+          div.className = 'price-primary';
+          div.textContent = `${p.price} (${p.unitSize})`;
+          listEl.appendChild(div);
+        });
+      } else {
+        const div = document.createElement('div');
+        div.className = 'price-primary';
+        div.textContent = response.data.price || "--";
+        listEl.appendChild(div);
+      }
+    }
+    vwrPriceContent.style.display = 'block';
+    const catalogEl = document.getElementById('vwrCatalogNum');
+    if (catalogEl) {
+      const cn = response.data.catalogNumber || catNum;
+      catalogEl.textContent = cn ? `Catalog: ${cn}` : "";
+      catalogEl.style.display = cn ? 'block' : 'none';
+    }
+    const nameEl = document.getElementById('vwrItemName');
+    if (nameEl && response.data.itemName) {
+      nameEl.textContent = response.data.itemName;
+      nameEl.style.display = 'block';
+    }
+    const addBtn = document.getElementById('addVwrToListBtn');
+    if (addBtn) {
+      addBtn.style.display = 'none';
+      addBtn.onclick = () => saveVendorItem(response.data, "VWR");
+    }
+    if (response.data.unitSize) {
+      const extraFields = document.getElementById('extraDataFields');
+      if (extraFields) {
+        extraFields.style.display = 'block';
+        const unitEl = document.getElementById('unitSizeVal');
+        if (unitEl) unitEl.textContent = response.data.unitSize;
+      }
+    }
+  } else {
+    vwrNoPrice.style.display = 'block';
+  }
+}
+
+function runFetchAfterTabReady(vendor, tabId, catalogNumber, created, statusMsg, onComplete) {
+  const isFisher = vendor === "Fisher Scientific";
+  const fisherLoading = document.getElementById('fisherLoading');
+  const vwrLoading = document.getElementById('vwrLoading');
+  if (isFisher) {
+    fisherLoading.style.display = 'block';
+  } else {
+    vwrLoading.style.display = 'block';
+  }
+  statusMsg.innerText = created ? `Opening ${vendor} tab, fetching price...` : `Fetching price from ${vendor}...`;
+
+  function doFetch() {
+    statusMsg.style.display = 'none';
+    if (isFisher) {
+      chrome.tabs.sendMessage(tabId, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber }, (response) => {
+        if (chrome.runtime.lastError) response = null;
+        if (response && response.success && response.vendor === "Fisher Scientific" && response.data?.price) {
+          onComplete(response);
+          return;
+        }
+        chrome.tabs.query({ active: true, currentWindow: true }, ([activeTab]) => {
+          chrome.runtime.sendMessage(
+            { type: "RESOLVE_FISHER_CATALOG_NUMBER", query: catalogNumber, tabId: activeTab?.id },
+            (resolveResponse) => {
+              const resolved = (resolveResponse?.success && resolveResponse.catalogNumber) ? resolveResponse.catalogNumber : catalogNumber;
+              chrome.tabs.sendMessage(tabId, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: resolved }, (fallbackResponse) => {
+                if (chrome.runtime.lastError) fallbackResponse = null;
+                onComplete(fallbackResponse || { data: {} });
+              });
+            }
+          );
+        });
+      });
+    } else {
+      chrome.tabs.sendMessage(tabId, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber }, (response) => {
+        if (chrome.runtime.lastError) response = null;
+        if (response && response.success && response.vendor === "VWR" && (response.data?.price || response.data?.prices?.length)) {
+          onComplete(response);
+          return;
+        }
+        chrome.runtime.sendMessage({ type: "RESOLVE_VWR_CATALOG_NUMBER", query: catalogNumber }, (resolveResponse) => {
+          const resolved = (resolveResponse?.success && resolveResponse.vwrCatalogNumber) ? resolveResponse.vwrCatalogNumber : catalogNumber;
+          chrome.tabs.sendMessage(tabId, { type: "FETCH_PRICE_ON_DEMAND", catalogNumber: resolved }, (fallbackResponse) => {
+            if (chrome.runtime.lastError) fallbackResponse = null;
+            onComplete(fallbackResponse || { data: {} });
+          });
+        });
+      });
+    }
+  }
+
+  if (created) {
+    let done = false;
+    const runFetch = () => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onTabUpdated);
+      doFetch();
+    };
+    const onTabUpdated = (tid, changeInfo) => {
+      if (tid !== tabId || changeInfo.status !== 'complete') return;
+      runFetch();
+    };
+    chrome.tabs.onUpdated.addListener(onTabUpdated);
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === 'complete') runFetch();
+    }).catch(() => {});
+    setTimeout(() => runFetch(), 15000);
+  } else {
+    doFetch();
+  }
+}
+
+function openVendorAndPrompt(vendor, statusMsg, catalogNumber) {
   statusMsg.style.display = 'block';
   statusMsg.innerText = `Opening ${vendor} tab...`;
   statusMsg.style.color = "#666";
   chrome.runtime.sendMessage({ type: "OPEN_VENDOR_TAB", vendor }, (response) => {
     if (response && response.success) {
-      statusMsg.style.display = 'none';
+      if (catalogNumber) {
+        const isFisher = vendor === "Fisher Scientific";
+        const onComplete = isFisher ? (r) => applyFisherResultFromOpenTab(r, catalogNumber) : (r) => applyVwrResultFromOpenTab(r, catalogNumber);
+        runFetchAfterTabReady(vendor, response.tabId, catalogNumber, response.created, statusMsg, onComplete);
+      } else {
+        statusMsg.style.display = 'none';
+      }
     } else {
       statusMsg.innerText = `Unable to open ${vendor} tab.`;
       statusMsg.style.color = "#b91c1c";
@@ -521,7 +691,8 @@ if (openFisherTabBtn) {
     const fisherNoTab = document.getElementById('fisherNoTab');
     if (fisherNoTab) fisherNoTab.style.display = 'none';
     const statusMsg = document.getElementById('bridgeStatus');
-    openVendorAndPrompt("Fisher Scientific", statusMsg);
+    const catalogNumber = lastVendorSearch?.catalogNumber || document.getElementById('quartzyInput')?.value?.trim();
+    openVendorAndPrompt("Fisher Scientific", statusMsg, catalogNumber);
   });
 }
 if (openVwrTabBtn) {
@@ -529,7 +700,8 @@ if (openVwrTabBtn) {
     const vwrNoTab = document.getElementById('vwrNoTab');
     if (vwrNoTab) vwrNoTab.style.display = 'none';
     const statusMsg = document.getElementById('bridgeStatus');
-    openVendorAndPrompt("VWR", statusMsg);
+    const catalogNumber = lastVendorSearch?.catalogNumber || document.getElementById('quartzyInput')?.value?.trim();
+    openVendorAndPrompt("VWR", statusMsg, catalogNumber);
   });
 }
 
@@ -537,7 +709,7 @@ if (openVendorTabBtn) {
   openVendorTabBtn.addEventListener('click', () => {
     const statusMsg = document.getElementById('bridgeStatus');
     if (!lastVendorSearch || !lastVendorSearch.vendor) return;
-    openVendorAndPrompt(lastVendorSearch.vendor, statusMsg);
+    openVendorAndPrompt(lastVendorSearch.vendor, statusMsg, lastVendorSearch.catalogNumber);
   });
 }
 
