@@ -5,14 +5,7 @@ const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
 let vwrInterceptedData = null;
 let vwrAuthToken = null;
 
-// Inject the VWR Interceptor for network sniffing
-if (window.location.href.includes("vwr.com") || window.location.href.includes("avantorsciences.com")) {
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('vwr_interceptor.js');
-  (document.head || document.documentElement).appendChild(script);
-  script.onload = () => script.remove();
-}
-
+// VWR interceptor is injected at document_start via vwr_interceptor_injector.js
 // Listen for intercepted data from the main world
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
@@ -430,53 +423,61 @@ async function fetchVwrPrice(catNum) {
     });
     const searchData = await searchRes.json();
 
-    let vwrCode = null;
-    if (searchData.products && searchData.products.length > 0) {
-      // Find the best match
-      vwrCode = searchData.products[0].code;
+    const product = searchData.products && searchData.products[0];
+    if (!product) {
+      throw new Error(`Could not resolve VWR product for ${catNum} via KeywordSearch`);
     }
 
-    if (!vwrCode) {
-      throw new Error(`Could not resolve VWR Code for ${catNum} via KeywordSearch`);
-    }
+    // Ordertable API expects numeric productId (e.g. 22675708); keywordSearch may return code (e.g. NA4852050)
+    const productId = product.uid ?? product.productId ?? product.id ?? product.code;
+    const vwrCode = product.code;
 
-    console.log(`[Quartzy Bridge] Resolved VWR Code: ${vwrCode}. Fetching price...`);
+    console.log(`[Quartzy Bridge] Resolved productId: ${productId}. Fetching ordertable...`);
 
-    // 2. Hit the ordertable API using the resolved code
-    const apiUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/api/product/ordertable?productId=${vwrCode}&lang=en_US&curr=USD&user=anonymous&newStorefront=true`;
+    // 2. Hit the ordertable API using productId (numeric preferred) or code
+    const apiUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/api/product/ordertable?productId=${encodeURIComponent(productId)}&lang=en_US&curr=USD&user=anonymous&newStorefront=true`;
 
     const response = await fetch(apiUrl, {
       headers: vwrAuthToken ? { "Authorization": vwrAuthToken } : {}
     });
+    if (!response.ok) {
+      throw new Error(`Ordertable API HTTP ${response.status}`);
+    }
     const data = await response.json();
 
+    if (data.errors || data.error) {
+      throw new Error(data.errors?.[0]?.message || data.error?.message || "Ordertable API error");
+    }
     if (data.productRows && data.productRows.length > 0) {
-      // Find the specific variant row. 
+      // Find the specific variant row (match catalogNumber, skuId, or code)
+      const norm = (s) => (s || "").replace(/[^a-zA-Z0-9]/g, "");
       let row = data.productRows.find(r =>
         r.catalogNumber === catNum ||
-        (r.catalogNumber && r.catalogNumber.replace(/[^a-zA-Z0-9]/g, '') === catNum.replace(/[^a-zA-Z0-9]/g, '')) ||
-        r.code === catNum
+        norm(r.catalogNumber) === norm(catNum) ||
+        r.code === catNum ||
+        (r.prices && r.prices.some(p => p.skuId === catNum || norm(p.skuId) === norm(catNum)))
       );
 
       // Fallback: take the first one
       if (!row) row = data.productRows[0];
 
       if (row && row.prices && row.prices.length > 0) {
+        const priceObj = row.prices[0];
         return {
           success: true,
           vendor: "VWR",
           data: {
-            catalogNumber: row.catalogNumber || catNum,
+            catalogNumber: priceObj.skuId || row.catalogNumber || catNum,
             vwrCode: row.code || vwrCode,
-            itemName: row.name || data.description,
+            itemName: data.description || row.name,
             // Return all available prices
             prices: row.prices.map(p => ({
               price: p.formattedDisplayPrice,
               unitSize: p.uomDescription || "Each"
             })),
             // Maintain single price/unitSize for backward compatibility or simple UI
-            price: row.prices[0].formattedDisplayPrice,
-            unitSize: row.prices[0].uomDescription || "Each"
+            price: priceObj.formattedDisplayPrice,
+            unitSize: priceObj.uomDescription || "Each"
           }
         };
       }

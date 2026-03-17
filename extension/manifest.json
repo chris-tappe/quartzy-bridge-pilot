@@ -21,6 +21,16 @@
   "content_scripts": [
     {
       "matches": [
+        "*://*.vwr.com/*",
+        "*://*.avantorsciences.com/*"
+      ],
+      "js": [
+        "vwr_interceptor_injector.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "*://*.fishersci.com/*",
         "*://*.vwr.com/*",
         "*://*.avantorsciences.com/*"
