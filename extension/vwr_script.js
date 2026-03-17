@@ -85,26 +85,52 @@ async function addProductToList(catNum, qty) {
     // Try to "type" it
     setInputValue(input, catNum);
 
-    // Trigger events
+    // Trigger events (Angular/React often need these to run search)
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
 
-    // 2. Wait for dropdown result
+    // 2. Wait for dropdown result - find the one matching our catalog number
     console.log("[VWR Bridge] Waiting for dropdown results for " + catNum + "...");
-    const dropdownSelector = "button.quick-order-results-product, .quick-order-results-product, .quick-order-results-container button";
+    const dropdownSelectors = [
+        "button.quick-order-results-product",
+        ".quick-order-results-product",
+        ".quick-order-results-container button",
+        "[role='option']",
+        "[role='listbox'] button"
+    ];
 
     let dropdownItem = null;
     let attempts = 0;
-    while (!dropdownItem && attempts < 20) {
-        await new Promise(r => setTimeout(r, 500));
-        dropdownItem = document.querySelector(dropdownSelector);
-        attempts++;
+    const catNumNorm = catNum.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 
+    while (!dropdownItem && attempts < 25) {
+        await new Promise(r => setTimeout(r, 400));
+        for (const sel of dropdownSelectors) {
+            const candidates = Array.from(document.querySelectorAll(sel));
+            for (const el of candidates) {
+                const parent = el.closest("[class*='result'], [class*='product'], [class*='item']") || el.parentElement;
+                const scope = parent ? parent : el;
+                const text = (scope.textContent || el.textContent || el.innerText || el.getAttribute("aria-label") || "").toLowerCase();
+                const dataCat = (el.getAttribute("data-catalog-number") || el.getAttribute("data-catalog") || scope?.getAttribute("data-catalog-number") || "").toLowerCase();
+                const catLower = catNum.toLowerCase();
+                if (text.includes(catNumNorm) || text.includes(catLower) || dataCat.includes(catNumNorm)) {
+                    dropdownItem = el.tagName === "BUTTON" ? el : el.querySelector("button") || el;
+                    break;
+                }
+            }
+            if (dropdownItem) break;
+            if (candidates.length === 1) {
+                const c = candidates[0];
+                dropdownItem = c.tagName === "BUTTON" ? c : (c.querySelector("button") || c);
+                break;
+            }
+        }
         if (!dropdownItem && attempts % 4 === 0) {
             console.log("[VWR Bridge] Retrying input event...");
             input.dispatchEvent(new Event('input', { bubbles: true }));
         }
+        attempts++;
     }
 
     if (dropdownItem) {
@@ -114,18 +140,28 @@ async function addProductToList(catNum, qty) {
 
         // 3. Wait for the item to be added to the dynamic list below
         console.log("[VWR Bridge] Item selected. Waiting for it to appear in order list...");
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2500));
 
-        const qtyInputs = document.querySelectorAll("input[aria-label='Quantity']");
+        const qtySelectors = [
+            "input[aria-label='Quantity']",
+            "input[type='number'][name*='quantity']",
+            "[role='spinbutton']",
+            "input[formcontrolname='quantity']"
+        ];
+        let qtyInputs = [];
+        for (const sel of qtySelectors) {
+            qtyInputs = Array.from(document.querySelectorAll(sel));
+            if (qtyInputs.length > 0) break;
+        }
         if (qtyInputs.length > 0) {
             const latestQtyInput = qtyInputs[qtyInputs.length - 1];
             console.log(`[VWR Bridge] Setting quantity to ${qty}.`);
             latestQtyInput.focus();
-            setInputValue(latestQtyInput, qty.toString());
+            setInputValue(latestQtyInput, String(Math.max(1, parseInt(qty, 10) || 1)));
             latestQtyInput.dispatchEvent(new Event('input', { bubbles: true }));
             latestQtyInput.dispatchEvent(new Event('change', { bubbles: true }));
-            await new Promise(r => setTimeout(r, 500));
-            latestQtyInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            latestQtyInput.dispatchEvent(new Event('blur', { bubbles: true }));
+            await new Promise(r => setTimeout(r, 600));
         }
 
         // 4. Reset search box for next item

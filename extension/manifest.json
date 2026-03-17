@@ -60,7 +60,8 @@
     },
     {
       "matches": [
-        "*://www.avantorsciences.com/*/my-account/quick-order*"
+        "*://www.avantorsciences.com/*/my-account/quick-order*",
+        "*://www.vwr.com/*/my-account/quick-order*"
       ],
       "js": [
         "vwr_script.js"
