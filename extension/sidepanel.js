@@ -1,16 +1,4 @@
-// 1. On load, check if we have saved data for this tab
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  const tabId = tabs[0]?.id;
-  if (tabId) {
-    chrome.storage.local.get([`data_${tabId}`], (result) => {
-      const savedData = result[`data_${tabId}`];
-      if (savedData) {
-        updateUI(savedData);
-        chrome.action.setBadgeText({ tabId: tabId, text: "" });
-      }
-    });
-  }
-});
+// 1. On load, updateViewMode (called below) will refresh for the active tab
 
 // Re-render the request list when storage changes
 chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -36,6 +24,41 @@ chrome.runtime.onMessage.addListener(async (message) => {
 
 // --- View Management ---
 
+async function refreshForActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  const result = await chrome.storage.local.get([`data_${tab.id}`]);
+  const savedData = result[`data_${tab.id}`];
+  if (savedData) {
+    updateUI(savedData);
+    chrome.action.setBadgeText({ tabId: tab.id, text: "" });
+  } else {
+    // No saved data for this tab - show empty vendor state
+    const isVendor = tab.url && (tab.url.includes("fishersci.com") || tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com"));
+    if (isVendor) {
+      showEmptyVendorState(tab);
+    }
+  }
+}
+
+function showEmptyVendorState(tab) {
+  const resultArea = document.getElementById('resultArea');
+  if (!resultArea) return;
+  const isVwr = tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com");
+  resultArea.style.display = 'block';
+  document.getElementById('fisherResult').style.display = !isVwr ? 'block' : 'none';
+  document.getElementById('vwrResult').style.display = isVwr ? 'block' : 'none';
+  document.getElementById('fisherPriceContent').style.display = 'none';
+  document.getElementById('fisherNoTab').style.display = 'none';
+  document.getElementById('fisherNoPrice').style.display = !isVwr ? 'block' : 'none';
+  document.getElementById('fisherLoading').style.display = 'none';
+  document.getElementById('vwrPriceContent').style.display = 'none';
+  document.getElementById('vwrNoTab').style.display = 'none';
+  document.getElementById('vwrNoPrice').style.display = isVwr ? 'block' : 'none';
+  document.getElementById('vwrLoading').style.display = 'none';
+  document.getElementById('extraDataFields').style.display = 'none';
+}
+
 async function updateViewMode() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
@@ -46,14 +69,15 @@ async function updateViewMode() {
   const bulkTransfer = document.getElementById('bulkTransferCard');
   const statusPill = document.querySelector('.status-pill');
 
-  if (tab.url.includes("fishersci.com") || tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com")) {
+  if (tab.url && (tab.url.includes("fishersci.com") || tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com"))) {
     const isVwr = tab.url.includes("vwr.com") || tab.url.includes("avantorsciences.com");
     fisherView.style.display = 'block';
     quartzyView.style.display = 'none';
     if (bulkTransfer) bulkTransfer.style.display = 'none';
     statusPill.innerHTML = `&bull; ACTIVE (${isVwr ? 'VWR' : 'Fisher Scientific'})`;
     statusPill.style.color = '#1e7e34'; // Green
-  } else if (tab.url.includes("quartzy.com")) {
+    await refreshForActiveTab();
+  } else if (tab.url && tab.url.includes("quartzy.com")) {
     fisherView.style.display = 'none';
     quartzyView.style.display = 'block';
     // Do not hide resultArea on Quartzy so "Fetch Price" result card stays visible after opening a vendor tab
