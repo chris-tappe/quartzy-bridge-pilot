@@ -1,0 +1,15 @@
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Data logs (Keep your API secrets/session data private)
+*.har
+auth.json
+
+# OS junk
+.DS_Store

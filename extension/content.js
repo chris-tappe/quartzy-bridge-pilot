@@ -84,6 +84,19 @@ function extractUnitSize() {
   return "Each";
 }
 
+/**
+ * Extract display price from Fisher API product object.
+ * Priority: contractPrice (logged-in) → price → listPrice → totalPrice (fallback).
+ */
+function getFisherPrice(productData) {
+  if (!productData) return null;
+  const raw = productData.contractPrice ?? productData.price ?? productData.listPrice ?? productData.totalPrice;
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "number") return "$" + raw.toFixed(2);
+  const s = String(raw).trim();
+  return s || null;
+}
+
 function run() {
   const url = window.location.href;
   const isVwr = url.includes("vwr.com") || url.includes("avantorsciences.com");
@@ -144,9 +157,9 @@ function fetchPriceFromApi(catalogNumber) {
       }
 
       const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
+      const price = getFisherPrice(productData);
 
-      if (productData && productData.totalPrice) {
-        const price = productData.totalPrice;
+      if (price) {
         console.log(`[Quartzy Bridge] API Price Found: ${price}`);
 
         const extras = {
@@ -333,8 +346,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             productDataArray = data.priceAndAvailability[catalogNumber] || data.priceAndAvailability[catalogNumber.replace(/[^a-zA-Z0-9]/g, '')];
           }
           const productData = Array.isArray(productDataArray) ? productDataArray[0] : null;
+          const price = getFisherPrice(productData);
 
-          if (productData && productData.totalPrice) {
+          if (productData && price) {
             let itemName = productData.productName || productData.name || productData.description || productData.title || productData.partDescription || null;
             if (!itemName) {
               const urlMatch = window.location.href.match(fisherUrlRegex);
@@ -356,7 +370,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   vendor: "Fisher Scientific",
                   data: {
                     catalogNumber: catalogNumber,
-                    price: productData.totalPrice,
+                    price: price,
                     itemName: itemName || undefined
                   }
                 });
@@ -367,7 +381,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               vendor: "Fisher Scientific",
               data: {
                 catalogNumber: catalogNumber,
-                price: productData.totalPrice,
+                price: price,
                 itemName: itemName || undefined
               }
             });
