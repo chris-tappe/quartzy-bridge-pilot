@@ -3,6 +3,7 @@ console.log("[Quartzy Bridge] Content Script Loaded");
 // Example: .../products/stripette.../07200574?crossRef... -> 07200574
 const fisherUrlRegex = /products\/[^\/]+\/([^?#]+)/;
 let vwrInterceptedData = null;
+let vwrPriceDetailsData = null; // Logged-in contract prices from priceDetails API
 let vwrAuthToken = null;
 
 // VWR interceptor is injected at document_start via vwr_interceptor_injector.js
@@ -17,6 +18,11 @@ window.addEventListener("message", (event) => {
   if (event.data && event.data.type === "VWR_TOKEN_UPDATE") {
     vwrAuthToken = event.data.token;
     console.log("[Quartzy Bridge] VWR Auth Token Updated");
+  }
+  if (event.data && event.data.type === "VWR_PRICE_DETAILS_INTERCEPTED") {
+    vwrPriceDetailsData = event.data.data;
+    console.log("[Quartzy Bridge] Received priceDetails (logged-in) data:", event.data.data);
+    scrapeVendorData();
   }
 });
 
@@ -237,15 +243,19 @@ function scrapeVendorData() {
     }
   });
 
-  if (vwrInterceptedData && isVwr) {
+  // Prefer logged-in priceDetails (contract price) over ordertable (list price)
+  if (vwrPriceDetailsData && isVwr) {
+    catNum = vwrPriceDetailsData.catalogNumber || catNum;
+    price = vwrPriceDetailsData.price || price;
+  } else if (vwrInterceptedData && isVwr) {
     catNum = vwrInterceptedData.catalogNumber || catNum;
     price = vwrInterceptedData.price || price;
   }
 
   if (catNum && price && price !== "$0.00") {
     const extras = {
-      itemName: (vwrInterceptedData?.itemName) || document.querySelector(isVwr ? '#pdp-product-heading, .product-name-title, .desc-header' : 'h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
-      unitSize: (vwrInterceptedData?.unitSize) || extractUnitSize(),
+      itemName: (vwrPriceDetailsData?.itemName || vwrInterceptedData?.itemName) || document.querySelector(isVwr ? '#pdp-product-heading, .product-name-title, .desc-header' : 'h1')?.innerText?.trim() || document.title.split('|')[0].trim(),
+      unitSize: (vwrPriceDetailsData?.unitSize || vwrInterceptedData?.unitSize) || extractUnitSize(),
       url: window.location.href,
       vendor: isVwr ? "VWR" : "Fisher Scientific"
     };
@@ -390,11 +400,92 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+/**
+ * Try logged-in priceDetails API first. Returns contract price when user is logged in.
+ * Uses session cookies (credentials: include) and/or Bearer token. Falls back to null when not logged in.
+ * Response shape: { articles: [{ catalogNumber, uomSpecificPrices: [{ value, formattedDisplayPrice, uomID }] }] }
+ */
+async function fetchVwrPriceDetails(catNum) {
+  const baseUrl = "https://occapi.avantorsciences.com/occ/v2/us.vwr.com/users/current/priceDetails?lang=en_US&curr=USD&newStorefront=true";
+  const headers = { "Content-Type": "application/json" };
+  if (vwrAuthToken) headers["Authorization"] = vwrAuthToken;
+
+  let res = await fetch(baseUrl, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ productCodes: [catNum] })
+  });
+  if (!res.ok && (res.status === 400 || res.status === 404 || res.status === 405)) {
+    res = await fetch(`${baseUrl}&productCodes=${encodeURIComponent(catNum)}`, {
+      method: "GET",
+      headers,
+      credentials: "include"
+    });
+  }
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (!data?.articles?.length) return null;
+
+  const article = data.articles.find(a =>
+    (a.catalogNumber || "").replace(/[^a-zA-Z0-9]/g, "") === (catNum || "").replace(/[^a-zA-Z0-9]/g, "")
+  ) || data.articles[0];
+  const prices = article.uomSpecificPrices || [];
+  if (prices.length === 0) return null;
+
+  // Prefer EA (Each), then first available
+  const priceObj = prices.find(p => (p.uomID || "").toUpperCase() === "EA") || prices[0];
+  const uomMap = { EA: "Each", CS: "Case", PK: "Pack", BX: "Box" };
+  const unitSize = uomMap[(priceObj.uomID || "").toUpperCase()] || priceObj.uomID || "Each";
+
+  return {
+    catalogNumber: article.catalogNumber || catNum,
+    price: priceObj.formattedDisplayPrice || (priceObj.value != null ? `$${priceObj.value.toFixed(2)}` : null),
+    unitSize,
+    prices: prices.map(p => ({
+      price: p.formattedDisplayPrice || (p.value != null ? `$${p.value.toFixed(2)}` : null),
+      unitSize: uomMap[(p.uomID || "").toUpperCase()] || p.uomID || "Each"
+    }))
+  };
+}
+
 async function fetchVwrPrice(catNum) {
   try {
     console.log(`[Quartzy Bridge] Refining VWR lookup for: ${catNum}`);
 
-    // A. Ensure we have a token
+    // Try logged-in priceDetails API first (contract prices)
+    const priceDetailsResult = await fetchVwrPriceDetails(catNum);
+    if (priceDetailsResult && priceDetailsResult.price) {
+      console.log("[Quartzy Bridge] Using logged-in priceDetails:", priceDetailsResult.price);
+      let itemName = document.querySelector("#pdp-product-heading, .product-name-title, .desc-header")?.innerText?.trim() || document.querySelector("h1")?.innerText?.trim();
+      if (!itemName) {
+        try {
+          const searchUrl = `https://occapi.avantorsciences.com/occ/v2/us.vwr.com/products/keywordSearch?query=${encodeURIComponent(catNum)}&pageSize=1&fields=BASIC&lang=en_US&curr=USD&newStorefront=true`;
+          const searchRes = await fetch(searchUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(vwrAuthToken && { Authorization: vwrAuthToken }) },
+            body: JSON.stringify({ viewType: "EASY_VIEW" }),
+            credentials: "include"
+          });
+          const searchData = await searchRes.json();
+          const product = searchData?.products?.[0];
+          if (product) itemName = product.name || product.description;
+        } catch (_) { /* ignore */ }
+      }
+      return {
+        success: true,
+        vendor: "VWR",
+        data: {
+          catalogNumber: priceDetailsResult.catalogNumber,
+          price: priceDetailsResult.price,
+          unitSize: priceDetailsResult.unitSize,
+          prices: priceDetailsResult.prices || [{ price: priceDetailsResult.price, unitSize: priceDetailsResult.unitSize }],
+          itemName: itemName || undefined
+        }
+      };
+    }
+
+    // Fallback: ordertable (guest/list prices)
     if (!vwrAuthToken) {
       console.log("[Quartzy Bridge] No session token found. Fetching guest token...");
       const tokenRes = await fetch("https://occapi.avantorsciences.com/authorizationserver/oauth/token", {

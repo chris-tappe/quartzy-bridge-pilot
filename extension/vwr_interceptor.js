@@ -40,6 +40,31 @@
             }).catch(() => { });
         }
 
+        if (url.includes("/users/current/priceDetails") && response.ok) {
+            const clonedResponse = response.clone();
+            clonedResponse.json().then(data => {
+                if (data && data.articles && data.articles.length > 0) {
+                    const article = data.articles[0];
+                    const prices = article.uomSpecificPrices || [];
+                    if (prices.length > 0) {
+                        const priceObj = prices.find(p => (p.uomID || "").toUpperCase() === "EA") || prices[0];
+                        const uomMap = { EA: "Each", CS: "Case", PK: "Pack", BX: "Box" };
+                        const unitSize = uomMap[(priceObj.uomID || "").toUpperCase()] || priceObj.uomID || "Each";
+                        const message = {
+                            type: "VWR_PRICE_DETAILS_INTERCEPTED",
+                            data: {
+                                catalogNumber: article.catalogNumber,
+                                price: priceObj.formattedDisplayPrice || (priceObj.value != null ? "$" + priceObj.value.toFixed(2) : null),
+                                unitSize,
+                                url: window.location.href
+                            }
+                        };
+                        window.postMessage(message, "*");
+                    }
+                }
+            }).catch(() => { });
+        }
+
         return response;
     };
 })();
