@@ -1,19 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Quartzy Bridge Pilot",
-  "version": "0.2.2",
+  "name": "Quartzy Connect",
+  "version": "0.3.0",
+  "description": "Capture product data (JSON-LD or highlight mapping) in the side panel and build a request list.",
   "permissions": [
     "sidePanel",
     "storage",
-    "scripting",
-    "tabs",
-    "activeTab"
-  ],
-  "host_permissions": [
-    "*://*.fishersci.com/*",
-    "*://*.vwr.com/*",
-    "*://*.avantorsciences.com/*",
-    "*://occapi.avantorsciences.com/*"
+    "tabs"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,21 +14,15 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.vwr.com/*",
-        "*://*.avantorsciences.com/*"
+        "<all_urls>"
+      ],
+      "exclude_matches": [
+        "*://app.quartzy.com/*",
+        "*://*.quartzy.com/*"
       ],
       "js": [
-        "vwr_interceptor_injector.js"
-      ],
-      "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "*://*.fishersci.com/*",
-        "*://*.vwr.com/*",
-        "*://*.avantorsciences.com/*"
-      ],
-      "js": [
+        "ExtractionService.js",
+        "selectionMode.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -48,25 +35,6 @@
         "quartzy_script.js"
       ],
       "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "*://www.fishersci.com/store1/rapidorder*"
-      ],
-      "js": [
-        "fisher_script.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "*://www.avantorsciences.com/*/my-account/quick-order*",
-        "*://www.vwr.com/*/my-account/quick-order*"
-      ],
-      "js": [
-        "vwr_script.js"
-      ],
-      "run_at": "document_idle"
     }
   ],
   "icons": {
@@ -75,7 +43,7 @@
     "128": "images/icon128.png"
   },
   "action": {
-    "default_title": "Open Bridge",
+    "default_title": "Quartzy Connect",
     "default_icon": {
       "16": "images/icon16.png",
       "48": "images/icon48.png",
@@ -84,16 +52,5 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "vwr_interceptor.js"
-      ],
-      "matches": [
-        "*://*.vwr.com/*",
-        "*://*.avantorsciences.com/*"
-      ]
-    }
-  ]
+  }
 }

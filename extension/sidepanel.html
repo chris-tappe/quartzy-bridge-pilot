@@ -1,569 +1,295 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <title>Quartzy Connect</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --quartzy-blue: #0099d8;
-      --quartzy-orange: #FF5A1F;
-      --quartzy-orange-dark: #E04F1A;
-      --bg-gray: #f9fafb;
-      --text-dark: #111827;
-      --text-muted: #6b7280;
-      --border-subtle: #e5e7eb;
-      --shadow-soft: 0 1px 3px rgba(15, 23, 42, 0.08);
+      --red: #ef4444;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --bg: #f9fafb;
     }
-
-    /* Global layout */
-
-    .copy-btn {
-      background: transparent;
-      border: none;
-      color: #777;
-      padding: 0;
-      cursor: pointer;
-      margin-left: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: color 0.15s;
-    }
-
-    .copy-btn:hover {
-      color: #0099d8;
-    }
-
+    * { box-sizing: border-box; }
     body {
-      width: 340px;
       margin: 0;
       padding: 16px;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background-color: var(--bg-gray);
-      color: var(--text-dark);
-      box-sizing: border-box;
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg);
+      min-width: 300px;
     }
-
-    .panel-root {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-
-    /* Header */
-
     .header {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 10px 12px;
-      background-color: #ffffff;
-      border-radius: 10px;
-      box-shadow: var(--shadow-soft);
-      border-bottom: 1px solid var(--border-subtle);
+      gap: 10px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
     }
-
-    .header-main {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
     .logo {
       width: 32px;
       height: 32px;
-    }
-
-    h2 {
-      font-size: 16px;
-      margin: 0;
-      color: #111827;
-    }
-
-    .status-pill {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #ecfdf3;
-      color: #15803d;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-
-    .header-subtitle {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin: 2px 0 0 0;
-    }
-
-    /* Cards / sections */
-
-    .card {
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: var(--shadow-soft);
-      border: none;
-    }
-
-    .card + .card {
-      margin-top: 8px;
-    }
-
-    /* Buttons */
-
-    button {
-      font-family: inherit;
-    }
-
-    .btn-primary {
-      width: 100%;
-      background-color: var(--quartzy-orange);
-      color: #ffffff;
-      border: none;
-      padding: 12px;
       border-radius: 8px;
-      font-weight: 600;
-      font-size: 13px;
-      cursor: pointer;
-      box-shadow: var(--shadow-soft);
-      transition: background-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
-    }
-
-    .btn-primary:hover {
-      background-color: var(--quartzy-orange-dark);
-      transform: translateY(-0.5px);
-      box-shadow: 0 4px 6px rgba(15, 23, 42, 0.12);
-    }
-
-    .btn-primary:active {
-      transform: translateY(0);
-      box-shadow: var(--shadow-soft);
-    }
-
-    .btn-secondary {
-      width: 100%;
-      background-color: #16a34a;
-      color: #ffffff;
-      border: none;
-      padding: 12px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 13px;
-      cursor: pointer;
-      box-shadow: var(--shadow-soft);
-      transition: background-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
-    }
-
-    .btn-secondary:hover {
-      background-color: #15803d;
-      transform: translateY(-0.5px);
-      box-shadow: 0 4px 6px rgba(15, 23, 42, 0.12);
-    }
-
-    .btn-secondary:active {
-      transform: translateY(0);
-      box-shadow: var(--shadow-soft);
-    }
-
-    .btn-ghost {
-      border: none;
-      background: transparent;
-      color: var(--quartzy-orange);
-      font-size: 11px;
-      font-weight: 600;
-      padding: 4px 8px;
-      border-radius: 999px;
-      cursor: pointer;
-      transition: background-color 0.15s ease, color 0.15s ease;
-    }
-
-    .btn-ghost:hover {
-      background-color: rgba(255, 90, 31, 0.08);
-      color: var(--quartzy-orange-dark);
-    }
-
-    .btn-danger-text {
-      border: none;
-      background: transparent;
-      color: #dc2626;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 4px 0;
-      cursor: pointer;
-      text-align: left;
-    }
-
-    .btn-danger-text:hover {
-      color: #b91c1c;
-    }
-
-    /* Inputs */
-
-    .input {
-      width: 100%;
-      padding: 8px 10px;
-      box-sizing: border-box;
-      border-radius: 8px;
-      border: 1px solid #d1d5db;
-      font-size: 13px;
-      color: var(--text-dark);
-      background-color: #ffffff;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
-    }
-
-    .input::placeholder {
-      color: #9ca3af;
-    }
-
-    .input:focus {
-      outline: none;
-      border-color: var(--quartzy-orange);
-      box-shadow: 0 0 0 1px rgba(255, 90, 31, 0.5);
-    }
-
-    /* Data / labels / typography */
-
-    .data-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #6b7280;
-      margin-bottom: 4px;
-    }
-
-    .data-value {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 8px;
-      color: #111827;
-    }
-
-    .catalog-value {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 13px;
-      color: #374151;
-    }
-
-    .item-title {
-      font-size: 13px;
-      line-height: 1.4;
-      font-weight: 500;
-      color: #6b7280;
-      margin-bottom: 4px;
-    }
-
-    .price-primary {
-      font-size: 15px;
-      font-weight: 700;
-      color: #16a34a;
-    }
-
-    .vendor-catalog-num {
-      font-size: 11px;
-      color: #6b7280;
-      margin-bottom: 2px;
-    }
-
-    .vendor-item-name {
-      font-size: 12px;
-      line-height: 1.35;
-      color: #374151;
-      margin-bottom: 4px;
-    }
-
-    .vendor-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #6b7280;
-    }
-
-    .vendor-result-block {
-      padding-bottom: 2px;
-    }
-
-    .vendor-price-row {
+      background: var(--red);
+      color: #fff;
       display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 16px;
     }
-
-    .vendor-price-list {
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .sub {
+      margin: 4px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .new-request h2 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 0 0 8px 0;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .row {
       display: flex;
       flex-direction: column;
       gap: 2px;
-    }
-
-    .helper-text {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 8px;
-    }
-
-    .helper-success {
-      font-size: 11px;
-      color: #15803d;
-      margin-top: 8px;
-    }
-
-    .divider {
-      height: 1px;
-      background: var(--border-subtle);
-      margin: 12px 0;
-    }
-
-    /* Request list */
-
-    #savedRequestsList {
-      font-size: 12px;
-      color: #4b5563;
-    }
-
-    .request-list-empty {
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .request-item {
-      padding: 10px 0;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .request-item:not(:first-child) {
-      border-top: 1px solid #f3f4f6;
-    }
-
-    .request-item-header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .request-item-name {
-      font-size: 13px;
-      font-weight: 600;
-      color: #111827;
-      max-width: 180px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .request-item-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    .request-item-meta strong {
-      font-weight: 500;
-      color: #4b5563;
-    }
-
-    .request-item-price {
-      margin-left: auto;
-      font-weight: 600;
-      color: #16a34a;
-      font-size: 12px;
-    }
-
-    .request-item-footer {
-      margin-top: 4px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .request-item-link {
-      font-size: 11px;
-      color: #2563eb;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .request-item-link:hover {
-      text-decoration: underline;
-    }
-
-    .icon-btn {
-      border: none;
-      background: transparent;
-      padding: 2px;
-      border-radius: 999px;
-      cursor: pointer;
-      color: #9ca3af;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      transition: color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
-      opacity: 0.7;
-    }
-
-    .icon-btn:hover {
-      color: #4b5563;
-      background-color: #f3f4f6;
-      opacity: 1;
-    }
-
-    .request-item-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    /* Bulk transfer items */
-    .bulk-item {
-      display: flex;
-      flex-direction: column;
-      padding: 6px 0;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
       border-bottom: 1px solid #f3f4f6;
     }
-
-    .bulk-item-row {
+    .row:last-of-type { margin-bottom: 12px; padding-bottom: 0; border-bottom: none; }
+    .row-h {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .row-actions { display: flex; align-items: center; gap: 6px; }
+    .value {
+      font-size: 13px;
+      word-break: break-word;
+      min-height: 1.25em;
+    }
+    .value.missing { color: #9ca3af; }
+    .wand {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 8px;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .wand:hover { background: #f9fafb; border-color: #d1d5db; }
+    .wand:disabled { opacity: 0.45; cursor: not-allowed; }
+    .badge-ok { color: #10b981; font-size: 12px; font-weight: 600; }
+    .add-btn {
+      display: block;
+      width: 100%;
+      margin-top: 4px;
+      padding: 10px 14px;
+      border: none;
+      border-radius: 8px;
+      background: var(--red);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .add-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .add-btn:hover:not(:disabled) { filter: brightness(0.95); }
+    .qty-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .qty-row .label { margin: 0; }
+    .qty-input {
+      width: 80px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 16px 0 8px 0;
+    }
+    .request-list {
+      max-height: 200px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .request-line {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .request-line .req-title {
+      font-weight: 600;
+      color: var(--text);
+      word-break: break-word;
       display: flex;
       justify-content: space-between;
-      font-size: 11px;
-      color: #374151;
+      align-items: flex-start;
+      gap: 8px;
     }
-
-    .bulk-item-meta {
-      font-size: 10px;
-      color: #9ca3af;
+    .request-line .req-title .req-title-text { flex: 1; min-width: 0; }
+    .request-line .req-meta { color: var(--muted); margin-top: 4px; clear: both; }
+    .request-line .remove-line {
+      flex-shrink: 0;
+      border: none;
+      background: transparent;
+      color: var(--red);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      padding: 0;
     }
+    .request-empty {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 4px 0 8px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      padding: 10px 14px;
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 20;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
-
 <body>
-  <div class="panel-root">
-    <div class="header">
-      <div class="header-main">
-        <img src="images/icon48.png" alt="Logo" class="logo">
-        <div>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <h2>Bridge Pilot</h2>
-            <span class="status-pill">&bull; ACTIVE</span>
-          </div>
-          <p class="header-subtitle">Bridge between Quartzy and vendor product pages.</p>
-        </div>
-      </div>
-    </div>
-
-    <div id="fisher-view" style="display: none;"></div>
-
-    <!-- Quartzy: Enter Catalog Number + Fetch at top -->
-    <div id="quartzy-view" style="display: none;">
-      <div class="card">
-        <p class="data-label" style="margin-bottom: 6px;">Enter Catalog Number</p>
-        <input type="text" id="quartzyInput" class="input" placeholder="e.g. 07-200-571">
-        <button id="fetchBridgeBtn" class="btn-primary" style="margin-top: 10px;">Fetch Price (via Bridge)</button>
-        <button id="openVendorTabBtn" class="btn-secondary" style="margin-top: 8px; display:none;">Open Vendor to search</button>
-        <p id="bridgeStatus" class="helper-text" style="display:none;">Searching vendor tabs...</p>
-      </div>
-
-      <div id="bulkTransferCard" class="card" style="display: none;">
-        <h3 style="font-size: 14px; margin: 0 0 8px 0;">Selected Items</h3>
-        <div id="selectedItemsList" style="font-size: 12px; max-height: 110px; overflow-y: auto; color: #4b5563;">
-          Check boxes in Quartzy to see items here.
-        </div>
-        <button id="transferToFisherBtn" class="btn-secondary" style="display: none; margin-top: 10px;">Transfer to
-          Fisher</button>
-        <button id="transferToVwrBtn" class="btn-secondary" style="display: none; margin-top: 8px;">Transfer to VWR</button>
-        <p id="transferStatus" class="helper-text" style="display:none;"></p>
-      </div>
-    </div>
-
-    <!-- Search results (below fetch when on Quartzy; also shown when on vendor tab) -->
-    <div id="resultArea" class="card" style="display: none;">
-        <div id="extraDataFields" style="display: none;">
-          <div id="unitSizeSection" style="margin-top: 8px;">
-            <div class="data-label">Unit Size</div>
-            <div id="unitSizeVal" class="data-value">--</div>
-          </div>
-        </div>
-
-        <div id="vendorPrices" style="margin-top: 12px; display: flex; flex-direction: column; gap: 14px;">
-          <!-- Fisher Result -->
-          <div id="fisherResult" class="vendor-result-block">
-            <div class="vendor-label">Fisher Scientific</div>
-            <div id="fisherContent" style="margin-top: 4px;">
-              <div id="fisherPriceContent" style="display: none;">
-                <div id="fisherCatalogNum" class="vendor-catalog-num" style="display: none;"></div>
-                <div id="fisherItemName" class="vendor-item-name" style="display: none;"></div>
-                <div class="vendor-price-row">
-                <div id="fisherPriceVal" class="price-primary">--</div>
-                <button id="addFisherToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
-              </div>
-              <button id="fisherOpenInTabBtn" class="btn-ghost vendor-open-btn" style="display: none; margin-top: 4px;">Open in Fisher tab</button>
-            </div>
-            <div id="fisherNoTab" style="display: none;">
-              <p class="helper-text" style="margin: 0 0 6px 0;">No Fisher tab open.</p>
-              <button id="openFisherTabBtn" class="btn-ghost">Open Fisher to search</button>
-            </div>
-            <div id="fisherNoPrice" class="helper-text" style="display: none;">No price found.</div>
-            <div id="fisherLoading" class="helper-text" style="display: none;">Querying...</div>
-          </div>
-        </div>
-
-        <!-- VWR Result -->
-        <div id="vwrResult" class="vendor-result-block">
-            <div class="vendor-label">VWR / Avantor</div>
-            <div id="vwrContent" style="margin-top: 4px;">
-              <div id="vwrPriceContent" style="display: none;">
-                <div id="vwrCatalogNum" class="vendor-catalog-num" style="display: none;"></div>
-                <div id="vwrItemName" class="vendor-item-name" style="display: none;"></div>
-                <div class="vendor-price-row">
-                <div id="vwrPriceList" class="vendor-price-list"></div>
-                <button id="addVwrToListBtn" class="btn-ghost" style="display: none;">Add to Request List</button>
-              </div>
-              <button id="vwrOpenInTabBtn" class="btn-ghost vendor-open-btn" style="display: none; margin-top: 4px;">Open in VWR tab</button>
-            </div>
-            <div id="vwrNoTab" style="display: none;">
-              <p class="helper-text" style="margin: 0 0 6px 0;">No VWR tab open.</p>
-              <button id="openVwrTabBtn" class="btn-ghost">Open VWR to search</button>
-            </div>
-            <div id="vwrNoPrice" class="helper-text" style="display: none;">No price found.</div>
-            <div id="vwrLoading" class="helper-text" style="display: none;">Querying...</div>
-          </div>
-        </div>
-      </div>
-
-      <button id="addToListBtn" class="btn-primary" style="margin-top: 14px; display: none;">
-        Add to Request List
-      </button>
-      <p id="addToListStatus" class="helper-success" style="display:none;">Added to list!</p>
-    </div>
-
-    <!-- Global Request List -->
-    <div class="card" id="globalRequestCard">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-        <h3 style="font-size: 14px; margin: 0;">Request List</h3>
-        <button id="clearListBtn" class="btn-danger-text" style="display: none;">Clear list</button>
-      </div>
-      <p class="helper-text" style="margin-top: 0; margin-bottom: 6px;">Saved items ready to populate into Quartzy.</p>
-      <div id="savedRequestsList">
-        <div class="request-list-empty">
-          No items added yet. Search a vendor and click "Add to Request List".
-        </div>
-      </div>
+  <div class="header">
+    <div class="logo" aria-hidden="true">Q</div>
+    <div>
+      <h1>Quartzy Connect</h1>
+      <p class="sub">We read structured data (e.g. JSON-LD) when the page provides it, or use the wands to capture highlighted text, then add lines to your request list with a quantity.</p>
     </div>
   </div>
 
+  <p class="empty" id="emptyState">Select a website tab in this window. When a page loads, its capture will appear here.</p>
+
+  <div class="new-request" id="dataState" style="display: none;">
+    <h2 id="formTitle">New request</h2>
+    <div class="card" id="panelForm">
+      <div class="row" data-input-row="itemName">
+        <div class="row-h">
+          <span class="label">Item name</span>
+          <div class="row-actions">
+            <span class="badge-ok" data-filled-check data-field="itemName" style="display: none">✓</span>
+            <button type="button" class="wand" data-wand="itemName" title="Select text on the product page" aria-label="Map item name from page">🪄</button>
+          </div>
+        </div>
+        <div class="value" id="vItemName" data-value-for="itemName">—</div>
+      </div>
+      <div class="row" data-input-row="catalogNumber">
+        <div class="row-h">
+          <span class="label">Catalog #</span>
+          <div class="row-actions">
+            <span class="badge-ok" data-filled-check data-field="catalogNumber" style="display: none">✓</span>
+            <button type="button" class="wand" data-wand="catalogNumber" title="Select text on the product page" aria-label="Map catalog from page">🪄</button>
+          </div>
+        </div>
+        <div class="value" id="vCatalog" data-value-for="catalogNumber">—</div>
+      </div>
+      <div class="row" data-input-row="price">
+        <div class="row-h">
+          <span class="label">Price</span>
+          <div class="row-actions">
+            <span class="badge-ok" data-filled-check data-field="price" style="display: none">✓</span>
+            <button type="button" class="wand" data-wand="price" title="Select text on the product page" aria-label="Map price from page">🪄</button>
+          </div>
+        </div>
+        <div class="value" id="vPrice" data-value-for="price">—</div>
+      </div>
+      <div class="row" data-input-row="unitSize">
+        <div class="row-h">
+          <span class="label">Unit size</span>
+          <div class="row-actions">
+            <span class="badge-ok" data-filled-check data-field="unitSize" style="display: none">✓</span>
+            <button type="button" class="wand" data-wand="unitSize" title="Select text on the product page" aria-label="Map unit size from page">🪄</button>
+          </div>
+        </div>
+        <div class="value" id="vUnit" data-value-for="unitSize">—</div>
+      </div>
+      <div class="qty-row">
+        <span class="label">Quantity</span>
+        <input type="number" class="qty-input" id="lineQuantity" min="1" max="999999" value="1" inputmode="numeric" aria-label="Quantity for this line" />
+      </div>
+      <button type="button" class="add-btn" id="addToList" disabled>Add to request list</button>
+    </div>
+  </div>
+
+  <h2 class="section-title" id="requestListHeading">Request list</h2>
+  <p class="request-empty" id="requestListEmpty">No items saved yet.</p>
+  <div class="request-list" id="requestList" style="display: none;" aria-live="polite"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="sidepanel.js"></script>
 </body>
-
 </html>

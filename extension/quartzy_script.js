@@ -7,87 +7,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "POPULATE_QUARTZY_REQUEST") {
         console.log("[Quartzy Bridge] POPULATE_QUARTZY_REQUEST received:", message.data);
         populateQuartzyForm(message.data);
-    } else if (message.type === "PARSE_FISHER_HTML") {
-        const html = message.html;
-        if (!html || typeof html !== "string") {
-            sendResponse({ success: false, error: "no html" });
-            return;
-        }
-        try {
-            const doc = new DOMParser().parseFromString(html, "text/html");
-            const catalogNumber = parseFirstFisherCatalogFromDoc(doc);
-            if (catalogNumber) {
-                sendResponse({ success: true, catalogNumber });
-            } else {
-                sendResponse({ success: false, error: "no_match" });
-            }
-        } catch (err) {
-            console.log("[Quartzy Bridge] PARSE_FISHER_HTML error:", err);
-            sendResponse({ success: false, error: err?.message || "parse_error" });
-        }
     }
 });
-
-/**
- * Find the first search result's catalog number in a Fisher search results document.
- * Prefers data attributes on the search result row/link (data-childPartNumbers, data-part-list),
- * then product links, then legacy selectors.
- */
-function parseFirstFisherCatalogFromDoc(doc) {
-    const fisherCatalogPattern = /^\d{2}-\d{3}-\d{3,}$|^[A-Z0-9]{5,}$|^p-\d+$/i;
-
-    function normalizeCatalog(val) {
-        if (val == null || typeof val !== "string") return null;
-        const s = val.trim();
-        const first = s.indexOf(",") >= 0 ? s.split(",")[0].trim() : s;
-        return first && fisherCatalogPattern.test(first) ? first : null;
-    }
-
-    // 1) First search result row: data-childPartNumbers (e.g. " 50995054 " or "50995054,12034013")
-    const firstRow = doc.querySelector(".search_result_item[data-childPartNumbers], [id^='search-result-'][data-childPartNumbers]");
-    if (firstRow) {
-        const val = firstRow.getAttribute("data-childPartNumbers");
-        const catalog = normalizeCatalog(val);
-        if (catalog) return catalog;
-    }
-
-    // 2) First result title link: data-part-list (e.g. " 50995054 ")
-    const partListLink = doc.querySelector('a[data-part-list][href*="/shop/products/"]');
-    if (partListLink) {
-        const val = partListLink.getAttribute("data-part-list");
-        const catalog = normalizeCatalog(val);
-        if (catalog) return catalog;
-    }
-
-    // 3) Legacy: .qa-part-number
-    const byQaPart = doc.querySelector(".qa-part-number");
-    if (byQaPart) {
-        const text = (byQaPart.textContent || "").trim();
-        if (text) return text;
-    }
-
-    // 4) Other part-number elements
-    const partNumbers = doc.querySelectorAll("[class*='part-number'], [class*='partNumber'], [data-part-number]");
-    for (const el of partNumbers) {
-        const text = (el.textContent || el.getAttribute("data-part-number") || "").trim();
-        if (text && fisherCatalogPattern.test(text)) return text;
-    }
-
-    // 5) Product links: extract from path and strip hash/query (e.g. .../50995054#?keyword=C2987I)
-    const links = doc.querySelectorAll('a[href*="/shop/products/"], a[href*="/catalog/search/products/"]');
-    for (const a of links) {
-        const href = (a.getAttribute("href") || "").trim();
-        const path = href.split("?")[0].split("#")[0];
-        const segment = path.split("/").filter(Boolean).pop();
-        const catalog = segment ? segment.replace(/\.html$/, "").trim() : null;
-        if (catalog && catalog !== "products" && fisherCatalogPattern.test(catalog)) return catalog;
-    }
-
-    // 6) Body text fallback
-    const bodyText = doc.body ? doc.body.innerText : "";
-    const match = bodyText.match(/\b(\d{2}-\d{3}-\d{3,})\b/) || bodyText.match(/\b([A-Z]{2}\d{5,})\b/) || bodyText.match(/\b(p-\d+)\b/i);
-    return match ? match[1] : null;
-}
 
 async function initQuartzy() {
     console.log("[Quartzy Bridge] Initializing Quartzy script...");
@@ -229,11 +150,13 @@ async function populateQuartzyForm(data) {
 
     console.log("[Quartzy Bridge] Populating form with:", data);
 
-    // 1. Vendor (Ember Power Select)
-    const vendorToFill = data.vendor || "Fisher Scientific";
-    const vendorFilled = await fillEmberDropdown("Vendor", vendorToFill);
-    if (!vendorFilled) {
-        console.warn(`[Quartzy Bridge] Could not find Vendor dropdown trigger for ${vendorToFill}.`);
+    // 1. Vendor (Ember Power Select) — only when a label is provided
+    const vendorToFill = (data.vendor && String(data.vendor).trim()) || "";
+    if (vendorToFill) {
+        const vendorFilled = await fillEmberDropdown("Vendor", vendorToFill);
+        if (!vendorFilled) {
+            console.warn(`[Quartzy Bridge] Could not find Vendor dropdown for: ${vendorToFill}.`);
+        }
     }
 
     // 2. Catalog Number (Ember Power Select)
@@ -296,9 +219,9 @@ function getSelectedItems() {
         let quantity = 1;
 
         // 1. Attempt to find Catalog Number
-        // Strict Regex: Matches typical Fisher formats like 00-000-000 or alphanumeric equivalents
-        const fisherRegex = /\b(?:\d{2}[-.]\d{3}[-.]\d{2,4}|[A-Z]{1,3}\d{3,}[A-Z0-9-]*)\b/i;
-        const strictMatch = rowText.match(fisherRegex);
+        // Part numbers: dashed numeric, alphanum SKUs, etc.
+        const catalogRegex = /\b(?:\d{2}[-.]\d{3}[-.]\d{2,4}|[A-Z]{1,3}\d{3,}[A-Z0-9-]*)\b/i;
+        const strictMatch = rowText.match(catalogRegex);
 
         if (strictMatch) {
             catalogNumber = strictMatch[0];
@@ -342,25 +265,8 @@ function getSelectedItems() {
             }
         }
 
-        // 3. Vendor
-        let vendor = "Unknown";
-        if (rowText.toLowerCase().includes("fisher")) {
-            vendor = "Fisher Scientific";
-        } else if (rowText.toLowerCase().includes("vwr")) {
-            vendor = "VWR";
-        } else {
-            // Try to find in columns
-            const cells = Array.from(row.querySelectorAll('td'));
-            const vendorCell = cells.find(td =>
-                td.innerText.toLowerCase().includes("fisher") ||
-                td.innerText.toLowerCase().includes("vwr")
-            );
-            if (vendorCell) {
-                const text = vendorCell.innerText.toLowerCase();
-                if (text.includes("fisher")) vendor = "Fisher Scientific";
-                else if (text.includes("vwr")) vendor = "VWR";
-            }
-        }
+        // 3. Vendor (not reliably identifiable from all Quartzy table layouts)
+        const vendor = "Unknown";
 
         itemsToTransfer.push({
             catalogNumber: catalogNumber.trim(),
