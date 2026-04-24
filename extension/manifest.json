@@ -22,6 +22,8 @@
       ],
       "js": [
         "ExtractionService.js",
+        "ContextService.js",
+        "AIExtractionService.js",
         "selectionMode.js",
         "content.js"
       ],

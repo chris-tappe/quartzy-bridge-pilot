@@ -63,10 +63,45 @@
     return t;
   }
 
-  function visitJsonLdNode(node, out, src) {
+  /**
+   * Indexes all JSON-LD object nodes with an @id (common in @graph) so we can follow Offer refs.
+   */
+  function indexJsonLdIds(node, idMap) {
+    if (node == null || !idMap) return;
+    if (Array.isArray(node)) {
+      node.forEach((n) => indexJsonLdIds(n, idMap));
+      return;
+    }
+    if (typeof node === "object") {
+      if (typeof node["@id"] === "string" && node["@id"].length > 0) {
+        idMap[node["@id"]] = node;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "@id") continue;
+        indexJsonLdIds(node[key], idMap);
+      }
+    }
+  }
+
+  function derefJsonLdNode(o, idMap) {
+    if (o == null) return o;
+    if (typeof o === "string" && idMap && idMap[o]) {
+      return idMap[o];
+    }
+    if (typeof o === "object" && idMap) {
+      const i = o["@id"];
+      if (typeof i === "string" && i && idMap[i]) {
+        return idMap[i];
+      }
+    }
+    return o;
+  }
+
+  function visitJsonLdNode(node, out, src, idMap) {
+    idMap = idMap || {};
     if (node == null) return;
     if (Array.isArray(node)) {
-      node.forEach((n) => visitJsonLdNode(n, out, src));
+      node.forEach((n) => visitJsonLdNode(n, out, src, idMap));
       return;
     }
     if (typeof node !== "object") return;
@@ -143,9 +178,14 @@
     if (isProduct && node.offers != null) {
       const offers = node.offers;
       const olist = Array.isArray(offers) ? offers : [offers];
-      for (const o of olist) {
-        if (!o || typeof o !== "object") continue;
-        visitJsonLdNode(o, out, src);
+      for (const rawO of olist) {
+        let o = derefJsonLdNode(rawO, idMap);
+        if (typeof o === "string" && idMap && idMap[o]) {
+          o = idMap[o];
+        }
+        if (o == null) continue;
+        if (typeof o !== "object") continue;
+        visitJsonLdNode(o, out, src, idMap);
         if (!isNonEmptyString(out.price) && o.price != null) {
           const np = normalizePrice(o.price);
           if (np) {
@@ -175,7 +215,7 @@
 
     for (const key of Object.keys(node)) {
       if (key === "@context" || key === "@id") continue;
-      visitJsonLdNode(node[key], out, src);
+      visitJsonLdNode(node[key], out, src, idMap);
     }
   }
 
@@ -183,16 +223,19 @@
     const out = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
     const src = { itemName: null, catalogNumber: null, price: null, unitSize: null };
     const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    const roots = [];
     scripts.forEach((script) => {
       const raw = script.textContent && script.textContent.trim();
       if (!raw) return;
       try {
-        const data = JSON.parse(raw);
-        visitJsonLdNode(data, out, src);
+        roots.push(JSON.parse(raw));
       } catch (e) {
         console.log("[Quartzy Connect] JSON-LD parse failed:", e && e.message);
       }
     });
+    const idMap = {};
+    roots.forEach((data) => indexJsonLdIds(data, idMap));
+    roots.forEach((data) => visitJsonLdNode(data, out, src, idMap));
     FIELDS.forEach((f) => {
       if (isNonEmptyString(out[f]) && f !== "price") {
         if (f === "catalogNumber") {
@@ -315,10 +358,27 @@
     }
   }
 
+  /**
+   * JSON-LD-only extraction (aligned with `parseJsonLdFromDocument` post-processing).
+   * @param {Document} [doc]
+   * @returns {{ fields: object, fieldSources: object }}
+   */
+  function extractFromJsonLD(doc) {
+    const d = doc || (typeof document !== "undefined" ? document : null);
+    if (!d) {
+      return {
+        fields: { itemName: "", catalogNumber: "", price: "", unitSize: "" },
+        fieldSources: { itemName: null, catalogNumber: null, price: null, unitSize: null }
+      };
+    }
+    return parseJsonLdFromDocument(d);
+  }
+
   const ExtractionService = {
     FIELDS,
     cleanProductText,
     extractFromDocument,
+    extractFromJsonLD,
     async run(doc) {
       const d = doc || (typeof document !== "undefined" ? document : null);
       if (!d) {

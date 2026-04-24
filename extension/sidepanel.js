@@ -19,12 +19,34 @@ const valueEls = {
   unitSize: document.getElementById("vUnit")
 };
 
+const headerStatusText = document.getElementById("headerStatusText");
+const headerStatusSpinner = document.getElementById("headerStatusSpinner");
+const headerStatusLine = document.getElementById("headerStatusLine");
+const panelForm = document.getElementById("panelForm");
+
+const IDLE_STATUS =
+  "Done. If a field is still empty, wait for the status above to say “Done” (spinner off), then use a wand to map that field on the product page.";
+
+function isQuartzyDomainUrl(url) {
+  if (!url) return false;
+  try {
+    const h = new URL(String(url).trim()).hostname.toLowerCase();
+    if (h === "quartzy.com" || h.endsWith(".quartzy.com")) {
+      return true;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return false;
+}
+
 function isFilled(data, key) {
   return data && data[key] != null && String(data[key]).trim().length > 0;
 }
 
 function canAddToList(data) {
   if (!data) return false;
+  if (data.isLoading === true) return false;
   return FIELDS.every((k) => isFilled(data, k));
 }
 
@@ -49,6 +71,7 @@ function isWandContextOk(data, tab) {
 }
 
 function updateRowBadges(data, tab) {
+  const loading = data && data.isLoading === true;
   FIELDS.forEach((f) => {
     const hasVal = isFilled(data, f);
     const vEl = valueEls[f];
@@ -56,29 +79,95 @@ function updateRowBadges(data, tab) {
     vEl.textContent = hasVal ? String(data[f]) : "—";
     const ok = document.querySelector(`[data-filled-check][data-field="${f}"]`);
     if (ok) ok.style.display = hasVal ? "inline" : "none";
+    const air = document.querySelector(`[data-ai-refined][data-field="${f}"]`);
+    if (air) {
+      const ar = data && data.aiRefined && data.aiRefined[f] === true;
+      air.style.display = hasVal && ar ? "inline" : "none";
+    }
   });
-  const wandsOn = isWandContextOk(data, tab);
+  const wandsOn = isWandContextOk(data, tab) && !loading;
   FIELDS.forEach((field) => {
     const w = document.querySelector(`[data-wand="${field}"]`);
     if (w) w.disabled = !wandsOn;
   });
+  if (lineQuantityEl) {
+    lineQuantityEl.disabled = loading;
+  }
 }
 
-function hasCaptureToShow(data) {
-  if (!data) return false;
-  if (FIELDS.some((f) => isFilled(data, f))) return true;
+function updateStatusHeader(data, tab) {
+  if (!headerStatusText) return;
+  const showSpinner = !!(data && data.isLoading === true);
+  if (headerStatusSpinner) {
+    headerStatusSpinner.classList.toggle("is-visible", showSpinner);
+  }
+  if (headerStatusLine) {
+    headerStatusLine.setAttribute("aria-busy", showSpinner ? "true" : "false");
+  }
+  if (panelForm) {
+    panelForm.classList.toggle("is-capturing", showSpinner);
+    panelForm.setAttribute("aria-busy", showSpinner ? "true" : "false");
+  }
+  if (!data) {
+    headerStatusText.textContent =
+      "Select a product website tab in this window, or focus a tab that already has a product page. Capture shows a status while the page is read.";
+    return;
+  }
+  if (tab && isQuartzyDomainUrl(tab.url)) {
+    headerStatusText.textContent =
+      "Quartzy in-app pages are not read by this panel. Open a vendor’s product page in a normal https tab, then return here.";
+    if (headerStatusSpinner) {
+      headerStatusSpinner.classList.remove("is-visible");
+    }
+    return;
+  }
+  if (tab && tab.url && !isMappableContentUrl(tab.url)) {
+    headerStatusText.textContent = "This tab is not a normal website page, so there is nothing to capture here.";
+    if (headerStatusSpinner) {
+      headerStatusSpinner.classList.remove("is-visible");
+    }
+    return;
+  }
+  if (data.statusMessage && String(data.statusMessage).trim().length) {
+    headerStatusText.textContent = String(data.statusMessage).trim();
+    return;
+  }
+  headerStatusText.textContent = IDLE_STATUS;
+}
+
+function hasCaptureToShow(data, tab) {
+  if (tab && isQuartzyDomainUrl(tab.url)) {
+    return false;
+  }
+  if (tab && !isMappableContentUrl((tab && tab.url) || "")) {
+    return false;
+  }
+  if (!data) {
+    return false;
+  }
+  if (isQuartzyDomainUrl(data.url)) {
+    return false;
+  }
+  if (data.isLoading === true && isMappableContentUrl(data.url)) {
+    return true;
+  }
+  if (FIELDS.some((f) => isFilled(data, f))) {
+    return true;
+  }
   return isMappableContentUrl(data.url);
 }
 
 function showData(data, tab) {
-  if (!hasCaptureToShow(data)) {
+  if (!hasCaptureToShow(data, tab)) {
     emptyState.style.display = "block";
     dataState.style.display = "none";
     if (addToList) addToList.disabled = true;
+    updateStatusHeader(data, tab);
     return;
   }
   emptyState.style.display = "none";
   dataState.style.display = "block";
+  updateStatusHeader(data, tab);
   updateRowBadges(data, tab);
   if (addToList) {
     addToList.disabled = !canAddToList(data);

@@ -55,6 +55,27 @@
       color: var(--muted);
       line-height: 1.4;
     }
+    .status-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      min-height: 1.4em;
+    }
+    .status-spinner {
+      display: none;
+      width: 14px;
+      height: 14px;
+      margin-top: 2px;
+      flex-shrink: 0;
+      border: 2px solid #e5e7eb;
+      border-top-color: #ef4444;
+      border-radius: 50%;
+      animation: qz-spin 0.7s linear infinite;
+    }
+    .status-spinner.is-visible { display: inline-block; }
+    @keyframes qz-spin { to { transform: rotate(360deg); } }
+    .status-text { flex: 1; min-width: 0; }
+    .card.is-capturing { opacity: 0.9; }
     .empty {
       color: var(--muted);
       font-size: 13px;
@@ -120,6 +141,17 @@
     .wand:hover { background: #f9fafb; border-color: #d1d5db; }
     .wand:disabled { opacity: 0.45; cursor: not-allowed; }
     .badge-ok { color: #10b981; font-size: 12px; font-weight: 600; }
+    .badge-ai {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #6b7280;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
     .add-btn {
       display: block;
       width: 100%;
@@ -229,7 +261,10 @@
     <div class="logo" aria-hidden="true">Q</div>
     <div>
       <h1>Quartzy Connect</h1>
-      <p class="sub">We read structured data (e.g. JSON-LD) when the page provides it, or use the wands to capture highlighted text, then add lines to your request list with a quantity.</p>
+      <p class="sub status-line" id="headerStatusLine" aria-live="polite" aria-atomic="true">
+        <span class="status-spinner" id="headerStatusSpinner" role="status" aria-label="Loading"></span>
+        <span class="status-text" id="headerStatusText">Select a product website tab, then wait while we read the page. Use the wands to map a field if capture finishes and something is still missing.</span>
+      </p>
     </div>
   </div>
 
@@ -237,12 +272,13 @@
 
   <div class="new-request" id="dataState" style="display: none;">
     <h2 id="formTitle">New request</h2>
-    <div class="card" id="panelForm">
+    <div class="card" id="panelForm" aria-busy="false">
       <div class="row" data-input-row="itemName">
         <div class="row-h">
           <span class="label">Item name</span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="itemName" style="display: none">✓</span>
+            <span class="badge-ai" data-ai-refined data-field="itemName" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="itemName" title="Select text on the product page" aria-label="Map item name from page">🪄</button>
           </div>
         </div>
@@ -253,6 +289,7 @@
           <span class="label">Catalog #</span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="catalogNumber" style="display: none">✓</span>
+            <span class="badge-ai" data-ai-refined data-field="catalogNumber" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="catalogNumber" title="Select text on the product page" aria-label="Map catalog from page">🪄</button>
           </div>
         </div>
@@ -263,6 +300,7 @@
           <span class="label">Price</span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="price" style="display: none">✓</span>
+            <span class="badge-ai" data-ai-refined data-field="price" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="price" title="Select text on the product page" aria-label="Map price from page">🪄</button>
           </div>
         </div>
@@ -273,6 +311,7 @@
           <span class="label">Unit size</span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="unitSize" style="display: none">✓</span>
+            <span class="badge-ai" data-ai-refined data-field="unitSize" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="unitSize" title="Select text on the product page" aria-label="Map unit size from page">🪄</button>
           </div>
         </div>

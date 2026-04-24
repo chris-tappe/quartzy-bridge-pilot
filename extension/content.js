@@ -6,6 +6,7 @@ const userTouched = { itemName: false, catalogNumber: false, price: false, unitS
 const userValues = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
 let captureAutomated = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
 let exFieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
+let exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSize: false };
 const WAND_FIELD_SET = { itemName: 1, catalogNumber: 1, price: 1, unitSize: 1 };
 
 /**
@@ -64,10 +65,92 @@ function vendorLabel() {
   return h.replace(/^www\./, "");
 }
 
-function extractionHasAnyField(ex) {
-  if (!ex || !ex.fields) return false;
-  const f = ex.fields;
-  return CAPTURE_FIELD_KEYS.some((k) => isNonEmptyTrim(f[k]));
+/**
+ * "Big four" are missing in the first-pass merged capture (JSON-LD + h1 + simple DOM).
+ */
+function hasBigFourGap(merged) {
+  return CAPTURE_FIELD_KEYS.some((k) => !isNonEmptyTrim(merged[k]));
+}
+
+function hasProductVariantInScope() {
+  const d = document;
+  const root = d.querySelector("main, #product-details, body") || d.body;
+  if (!root) return false;
+  return (
+    root.querySelector(
+      'input[type="radio"]:checked, input[type="checkbox"]:checked'
+    ) != null
+  );
+}
+
+/**
+ * JSON-LD (ef) is the source of truth for name and catalog when set.
+ * If the context string contains [USER_SELECTED_OPTION], prefer AI price and unit when provided;
+ * otherwise fill only gaps, including replacing generic "Each" unit when UCP/LD has no unit.
+ * @param {object} merged - first pass from mergeProductFields
+ * @param {object} fieldSources
+ * @param {object} ex - full extraction result
+ * @param {object|null} ai - { itemName, catalogNumber, price, unitSize }
+ * @param {string} contextText
+ */
+function mergeExtractionWithAi(merged, fieldSources, ex, ai, contextText) {
+  const exSrc = (ex && ex.fieldSources) || { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  const ef = (ex && ex.fields) || { itemName: "", catalogNumber: "", price: "", unitSize: "" };
+  const hasMarker = (contextText || "").indexOf("[USER_SELECTED_OPTION]") >= 0;
+  const m = { ...merged };
+  const src = { ...fieldSources };
+  const aiR = { itemName: false, catalogNumber: false, price: false, unitSize: false };
+  if (!ai) {
+    return { merged: m, fieldSources: src, aiRefined: aiR };
+  }
+
+  if (isNonEmptyTrim(ef.itemName)) {
+    m.itemName = ef.itemName;
+    if (exSrc.itemName) {
+      src.itemName = exSrc.itemName;
+    }
+  } else if (isNonEmptyTrim(ai.itemName) && !isNonEmptyTrim(merged.itemName)) {
+    m.itemName = ai.itemName;
+    src.itemName = "ai-fallback";
+    aiR.itemName = true;
+  }
+
+  if (isNonEmptyTrim(ef.catalogNumber)) {
+    m.catalogNumber = ef.catalogNumber;
+    if (exSrc.catalogNumber) {
+      src.catalogNumber = exSrc.catalogNumber;
+    }
+  } else if (isNonEmptyTrim(ai.catalogNumber) && !isNonEmptyTrim(merged.catalogNumber)) {
+    m.catalogNumber = ai.catalogNumber;
+    src.catalogNumber = "ai-fallback";
+    aiR.catalogNumber = true;
+  }
+
+  if (hasMarker) {
+    if (isNonEmptyTrim(ai.price)) {
+      m.price = ai.price;
+      src.price = "ai-fallback";
+      aiR.price = true;
+    }
+    if (isNonEmptyTrim(ai.unitSize)) {
+      m.unitSize = ai.unitSize;
+      src.unitSize = "ai-fallback";
+      aiR.unitSize = true;
+    }
+  } else {
+    if (!isNonEmptyTrim(ef.price) && isNonEmptyTrim(ai.price)) {
+      m.price = ai.price;
+      src.price = "ai-fallback";
+      aiR.price = true;
+    }
+    const onlyGenericUnit = merged.unitSize === "Each" && !isNonEmptyTrim(ef.unitSize);
+    if (!isNonEmptyTrim(ef.unitSize) && isNonEmptyTrim(ai.unitSize) && (!isNonEmptyTrim(merged.unitSize) || onlyGenericUnit)) {
+      m.unitSize = ai.unitSize;
+      src.unitSize = "ai-fallback";
+      aiR.unitSize = true;
+    }
+  }
+  return { merged: m, fieldSources: src, aiRefined: aiR };
 }
 
 function displayCaptureFields() {
@@ -86,7 +169,15 @@ function fieldSourcesForUi() {
   return s;
 }
 
-function applyExtractionSnapshot(merged, fieldSources) {
+function aiRefinedForUi() {
+  const a = { ...exAiRefined };
+  CAPTURE_FIELD_KEYS.forEach((k) => {
+    if (userTouched[k]) a[k] = false;
+  });
+  return a;
+}
+
+function applyExtractionSnapshot(merged, fieldSources, aiRefined) {
   captureAutomated = {
     itemName: (merged && merged.itemName) || "",
     catalogNumber: (merged && merged.catalogNumber) || "",
@@ -96,6 +187,9 @@ function applyExtractionSnapshot(merged, fieldSources) {
   exFieldSources = fieldSources
     ? { ...fieldSources }
     : { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  exAiRefined = aiRefined
+    ? { ...aiRefined }
+    : { itemName: false, catalogNumber: false, price: false, unitSize: false };
 }
 
 function resetCaptureState() {
@@ -105,6 +199,7 @@ function resetCaptureState() {
   });
   captureAutomated = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
   exFieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSize: false };
 }
 
 function normalizeWandValue(field, raw) {
@@ -123,18 +218,51 @@ function normalizeWandValue(field, raw) {
   return t;
 }
 
-function broadcastCurrentCapture() {
+function pushCaptureProgress(overrides) {
+  const o = Object.assign(
+    {
+      capturePhase: "working",
+      statusMessage: "Processing…"
+    },
+    overrides || {}
+  );
   const data = {
     ...displayCaptureFields(),
     url: window.location.href,
     vendor: vendorLabel(),
-    fieldSources: fieldSourcesForUi()
+    fieldSources: fieldSourcesForUi(),
+    aiRefined: aiRefinedForUi(),
+    isLoading: true,
+    capturePhase: o.capturePhase,
+    statusMessage: o.statusMessage
   };
   chrome.runtime.sendMessage({ type: "PRODUCT_CAPTURE", data });
 }
 
-function applyAndBroadcastProduct(merged, fieldSources) {
-  applyExtractionSnapshot(merged, fieldSources);
+function broadcastCurrentCapture(overrides) {
+  const data = {
+    ...displayCaptureFields(),
+    url: window.location.href,
+    vendor: vendorLabel(),
+    fieldSources: fieldSourcesForUi(),
+    aiRefined: aiRefinedForUi(),
+    isLoading: false,
+    capturePhase: "complete",
+    statusMessage: "Done. Use a wand to map any field that still needs text from the page (wait until the status shows this message)."
+  };
+  if (overrides) {
+    Object.assign(data, overrides);
+  }
+  if (overrides && "isLoading" in overrides) {
+    data.isLoading = overrides.isLoading;
+  } else {
+    data.isLoading = false;
+  }
+  chrome.runtime.sendMessage({ type: "PRODUCT_CAPTURE", data });
+}
+
+function applyAndBroadcastProduct(merged, fieldSources, aiRefined) {
+  applyExtractionSnapshot(merged, fieldSources, aiRefined);
   broadcastCurrentCapture();
 }
 
@@ -152,6 +280,7 @@ function startWandForField(key) {
       if (!v) return;
       userTouched[key] = true;
       userValues[key] = v;
+      exAiRefined[key] = false;
       captureAutomated = { ...captureAutomated, [key]: v };
       broadcastCurrentCapture();
     }
@@ -162,40 +291,74 @@ function startWandForField(key) {
 function emitBlankCapture() {
   applyExtractionSnapshot(
     { itemName: "", catalogNumber: "", price: "", unitSize: "" },
-    { itemName: null, catalogNumber: null, price: null, unitSize: null }
+    { itemName: null, catalogNumber: null, price: null, unitSize: null },
+    { itemName: false, catalogNumber: false, price: false, unitSize: false }
   );
-  broadcastCurrentCapture();
+  broadcastCurrentCapture({
+    statusMessage: "No structured data was found. Use a wand to select the text for each field you need on the product page."
+  });
 }
 
+let qzRunChain = Promise.resolve();
 function run() {
   if (typeof QuartzyExtractionService === "undefined") {
     emitBlankCapture();
     return;
   }
-  QuartzyExtractionService.run(document)
-    .then((ex) => {
-      if (!extractionHasAnyField(ex)) {
-        emitBlankCapture();
-        return;
-      }
-      const h1 = document.querySelector("h1")?.innerText?.trim() || document.title.split("|")[0].trim() || "";
-      const ef = ex.fields || {};
-      const catalogFromEx = isNonEmptyTrim(ef.catalogNumber) ? ef.catalogNumber : "";
-      const priceFromEx = isNonEmptyTrim(ef.price) ? ef.price : "";
-      const uDom = extractUnitSize();
-      const merged = mergeProductFields(ex, {
-        h1,
-        unitFromDom: uDom,
-        catalog: catalogFromEx,
-        price: priceFromEx,
-        vendor: vendorLabel()
-      });
-      applyAndBroadcastProduct(merged, ex && ex.fieldSources);
+  qzRunChain = qzRunChain
+    .then(function () {
+      return doCaptureRun();
     })
-    .catch((err) => {
-      console.warn("[Quartzy Bridge] Extraction on page failed:", err && err.message);
-      emitBlankCapture();
+    .catch(function (e) {
+      console.warn("[Quartzy Bridge] Capture chain error:", e && e.message);
     });
+}
+async function doCaptureRun() {
+  try {
+    pushCaptureProgress({
+      capturePhase: "json-ld",
+      statusMessage: "Reading JSON-LD, UCP meta, and .well-known data…"
+    });
+    const ex = await QuartzyExtractionService.run(document);
+    const h1 = document.querySelector("h1")?.innerText?.trim() || document.title.split("|")[0].trim() || "";
+    const ef = (ex && ex.fields) || {};
+    const catalogFromEx = isNonEmptyTrim(ef.catalogNumber) ? ef.catalogNumber : "";
+    const priceFromEx = isNonEmptyTrim(ef.price) ? ef.price : "";
+    const uDom = extractUnitSize();
+    const merged0 = mergeProductFields(ex, {
+      h1,
+      unitFromDom: uDom,
+      catalog: catalogFromEx,
+      price: priceFromEx,
+      vendor: vendorLabel()
+    });
+    let fieldSources = { ...((ex && ex.fieldSources) || { itemName: null, catalogNumber: null, price: null, unitSize: null }) };
+    const needAi = hasBigFourGap(merged0) || hasProductVariantInScope();
+    let ctx = "";
+    let ai = null;
+    if (needAi && typeof QuartzyContextService !== "undefined" && typeof QuartzyAIExtractionService !== "undefined") {
+      ctx = QuartzyContextService.getProductContextText(document) || "";
+      if (ctx.length >= 10) {
+        try {
+          pushCaptureProgress({
+            capturePhase: "ai",
+            statusMessage: "AI fallback: reading page (selected variant, prices, and missing fields)…"
+          });
+          ai = await QuartzyAIExtractionService.extractProductFromContext(ctx);
+        } catch (e) {
+          console.log("[Quartzy Bridge] AI extraction failed:", e && e.message);
+        }
+      }
+    }
+    const mres = mergeExtractionWithAi(merged0, fieldSources, ex, ai, ctx);
+    const merged = mres.merged;
+    fieldSources = mres.fieldSources;
+    const aiR = mres.aiRefined;
+    applyAndBroadcastProduct(merged, fieldSources, aiR);
+  } catch (err) {
+    console.warn("[Quartzy Bridge] Extraction on page failed:", err && err.message);
+    emitBlankCapture();
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -212,5 +375,53 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Initial run
 run();
+
+/* Fisher and similar sites often insert application/ld+json in a follow-up pass; re-run once and watch for that script. */
+(function scheduleJsonLdFollowups() {
+  if (document.readyState === "complete") {
+    setTimeout(function () {
+      void run();
+    }, 2500);
+  } else {
+    window.addEventListener("load", function onLoad() {
+      window.removeEventListener("load", onLoad);
+      setTimeout(function () {
+        void run();
+      }, 2500);
+    });
+  }
+  if (typeof MutationObserver === "undefined" || !document.documentElement) {
+    return;
+  }
+  var debounceT = null;
+  var obs = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var m = muts[i];
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (qzcNodeMayAddJsonLd(m.addedNodes[j])) {
+          if (debounceT) clearTimeout(debounceT);
+          debounceT = setTimeout(function () {
+            debounceT = null;
+            void run();
+          }, 450);
+          return;
+        }
+      }
+    }
+  });
+  obs.observe(document.documentElement, { childList: true, subtree: true });
+})();
+
+function qzcNodeMayAddJsonLd(n) {
+  if (!n || n.nodeType !== 1) {
+    return false;
+  }
+  if (n.nodeName === "SCRIPT" && n.getAttribute && n.getAttribute("type") === "application/ld+json") {
+    return true;
+  }
+  if (n.querySelector) {
+    return n.querySelector('script[type="application/ld+json"]') != null;
+  }
+  return false;
+}
