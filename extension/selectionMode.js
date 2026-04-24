@@ -106,13 +106,14 @@
       this._onEnd = end;
 
       const label = "Highlight the " + (fieldLabels[field] || String(field)) + " on the page...";
-      const onMouseUp = () => {
+        const onMouseUp = () => {
         if (!self._active) return;
         const sel = window.getSelection();
         const text = sel && sel.toString ? sel.toString().trim() : "";
         if (text) {
+          const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
           end("captured");
-          h.onCapture(text);
+          h.onCapture(text, range);
         }
       };
       const onCancel = () => {

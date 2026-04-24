@@ -275,9 +275,16 @@ function startWandForField(key) {
     return false;
   }
   QuartzySelectionMode.start(key, {
-    onCapture: (text) => {
+    onCapture: (text, range) => {
       const v = normalizeWandValue(key, text);
       if (!v) return;
+      if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.saveWandTarget === "function") {
+        try {
+          QuartzyDomFieldHints.saveWandTarget(key)(v, range);
+        } catch (e) {
+          /* ignore */
+        }
+      }
       userTouched[key] = true;
       userValues[key] = v;
       exAiRefined[key] = false;
@@ -289,13 +296,23 @@ function startWandForField(key) {
 }
 
 function emitBlankCapture() {
-  applyExtractionSnapshot(
-    { itemName: "", catalogNumber: "", price: "", unitSize: "" },
-    { itemName: null, catalogNumber: null, price: null, unitSize: null },
-    { itemName: false, catalogNumber: false, price: false, unitSize: false }
-  );
+  let merged = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
+  let fieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  let aiR = { itemName: false, catalogNumber: false, price: false, unitSize: false };
+  if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
+    const w = QuartzyDomFieldHints.applySavedHints(merged, fieldSources, normalizeWandValue);
+    merged = w.merged;
+    fieldSources = w.fieldSources;
+    CAPTURE_FIELD_KEYS.forEach((f) => {
+      if (fieldSources[f] === "dom-hint") aiR[f] = false;
+    });
+  }
+  applyExtractionSnapshot(merged, fieldSources, aiR);
+  const hasAny = CAPTURE_FIELD_KEYS.some((k) => isNonEmptyTrim(merged[k]));
   broadcastCurrentCapture({
-    statusMessage: "No structured data was found. Use a wand to select the text for each field you need on the product page."
+    statusMessage: hasAny
+      ? "No JSON-LD on this page, but saved wands for this site filled some fields from the page."
+      : "No structured data was found. Use a wand to select the text for each field you need on the product page."
   });
 }
 
@@ -351,9 +368,19 @@ async function doCaptureRun() {
       }
     }
     const mres = mergeExtractionWithAi(merged0, fieldSources, ex, ai, ctx);
-    const merged = mres.merged;
+    let merged = mres.merged;
     fieldSources = mres.fieldSources;
-    const aiR = mres.aiRefined;
+    let aiR = mres.aiRefined;
+    if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
+      const withHints = QuartzyDomFieldHints.applySavedHints(merged, fieldSources, normalizeWandValue);
+      merged = withHints.merged;
+      fieldSources = withHints.fieldSources;
+      CAPTURE_FIELD_KEYS.forEach((f) => {
+        if (fieldSources[f] === "dom-hint") {
+          aiR[f] = false;
+        }
+      });
+    }
     applyAndBroadcastProduct(merged, fieldSources, aiR);
   } catch (err) {
     console.warn("[Quartzy Bridge] Extraction on page failed:", err && err.message);

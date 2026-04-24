@@ -25,6 +25,7 @@
         "ContextService.js",
         "AIExtractionService.js",
         "selectionMode.js",
+        "DomFieldHints.js",
         "content.js"
       ],
       "run_at": "document_idle"
