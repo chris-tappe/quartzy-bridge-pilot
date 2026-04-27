@@ -8,7 +8,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --red: #ef4444;
+      /* Quartzy secondary (brand) orange */
+      --quartzy-orange: #f75e2d;
       --accent-blue: #2563eb;
       --accent-blue-hover: #1d4ed8;
       --text: #1f2937;
@@ -34,34 +35,7 @@
     .app-scroll {
       flex: 1 1 auto;
       overflow-y: auto;
-      padding: 16px 16px 0;
-    }
-    .header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border);
-    }
-    .header-text { flex: 1; min-width: 0; }
-    .logo {
-      width: 32px;
-      height: 32px;
-      border-radius: 8px;
-      background: var(--red);
-      color: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 16px;
-    }
-    h1 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 600;
-      color: #111;
+      padding: 12px 16px 0;
     }
     .mapping-block { margin-bottom: 12px; }
     .mapping-title {
@@ -122,7 +96,7 @@
     .view-tab:hover { color: var(--text); background: #f3f4f6; }
     .view-tab.is-active {
       color: var(--text);
-      border-bottom-color: var(--red);
+      border-bottom-color: var(--quartzy-orange);
     }
     .view-panel[hidden] { display: none !important; }
     .debug-card { font-size: 12px; }
@@ -202,7 +176,7 @@
       text-transform: none;
       letter-spacing: 0;
     }
-    .req { color: var(--red); font-weight: 600; margin-left: 1px; }
+    .req { color: var(--quartzy-orange); font-weight: 600; margin-left: 1px; }
     .row-actions { display: flex; align-items: center; gap: 6px; }
     .value,
     .value-input,
@@ -380,8 +354,8 @@
       width: 20px;
       height: 20px;
       border-radius: 3px;
-      background: #fee2e2;
-      color: var(--red);
+      background: rgba(247, 94, 45, 0.12);
+      color: var(--quartzy-orange);
       font-size: 11px;
       font-weight: 700;
       line-height: 1;
@@ -431,7 +405,7 @@
       flex-shrink: 0;
       border: none;
       background: transparent;
-      color: var(--red);
+      color: var(--quartzy-orange);
       cursor: pointer;
       font-size: 12px;
       font-weight: 600;
@@ -465,13 +439,7 @@
 </head>
 <body>
   <div class="app-scroll" id="appMainScroll">
-  <div class="header">
-    <div class="logo" aria-hidden="true">Q</div>
-    <div class="header-text">
-      <h1>Quartzy Connect</h1>
-    </div>
-  </div>
-
+  <h1 class="visually-hidden">Quartzy Connect</h1>
   <p class="visually-hidden" id="headerCaptureLive" role="status" aria-live="polite" aria-atomic="true"></p>
 
   <p class="empty" id="emptyState">Select a website tab in this window. When a product page loads, its capture will appear here.</p>

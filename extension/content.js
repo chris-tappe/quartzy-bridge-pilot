@@ -280,8 +280,11 @@ function resetCaptureState() {
 }
 
 function normalizeWandValue(field, raw) {
-  const t = (raw || "").trim();
+  let t = (raw || "").trim();
   if (!t) return "";
+  if (field === "catalogNumber") {
+    t = t.replace(/^#+\s*/, "");
+  }
   if (field === "price") {
     if (/\$|€|£/.test(t) || /USD/i.test(t)) return t;
     const n = parseFloat(t.replace(/[^0-9.]/g, ""));
@@ -366,15 +369,19 @@ function startWandForField(key) {
   }
   QuartzySelectionMode.start(key, {
     onCapture: (text, range) => {
-      const v = normalizeWandValue(key, text);
-      if (!v) return;
+      let toNormalize = (text || "").trim();
       if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.saveWandTarget === "function") {
         try {
-          QuartzyDomFieldHints.saveWandTarget(key)(v, range);
+          const expanded = QuartzyDomFieldHints.saveWandTarget(key)(text, range);
+          if (isNonEmptyTrim(expanded)) {
+            toNormalize = String(expanded).trim();
+          }
         } catch (e) {
           /* ignore */
         }
       }
+      const v = normalizeWandValue(key, toNormalize);
+      if (!v) return;
       userTouched[key] = true;
       userValues[key] = v;
       exAiRefined[key] = false;
@@ -456,6 +463,39 @@ function getRadioVariantRowScope(r) {
 }
 
 /**
+ * Fisher promo UI: .webprice-container has a strikethrough list price then .kmd-text-display-5 for the sale line.
+ * Schema.org b[itemprop=price] may be missing or may refer to the old price, so we prefer the display-5 number.
+ * @param {Element} inEl
+ * @returns {string} normalized display price
+ */
+function readWebpriceContainerSalePriceInScope(inEl) {
+  if (!inEl || !inEl.querySelector) {
+    return "";
+  }
+  const wpc = inEl.querySelector(".webprice-container");
+  if (!wpc) {
+    return "";
+  }
+  const saleEls = wpc.querySelectorAll(
+    "span.kmd-text-display-5, [class*=\"kmd-text-display-\"], span.kmd-text--display-5"
+  );
+  for (let s = 0; s < saleEls.length; s++) {
+    const el = saleEls[s];
+    if (!el || !el.closest) {
+      continue;
+    }
+    if (el.closest(".kmd-text-line-through, .kmd-line-through, [class*=\"line-through\"]")) {
+      continue;
+    }
+    const raw = (el.textContent || "").trim();
+    if (raw && /[$€£]/.test(raw)) {
+      return normalizePriceForPanel(raw);
+    }
+  }
+  return "";
+}
+
+/**
  * @param {Element} scope
  * @param {Element|null} [anchorInput] - if the buy box is wide, use the li/tr for this input only
  * @returns {string} normalized display price
@@ -466,6 +506,10 @@ function readItempropPriceInScope(scope, anchorInput) {
   }
   const row = anchorInput && anchorInput.closest ? anchorInput.closest("li, tr, [role=row]") : null;
   const inEl = row && (scope === row || scope.contains(row)) ? row : scope;
+  const saleFromWpc = readWebpriceContainerSalePriceInScope(inEl);
+  if (isNonEmptyTrim(saleFromWpc)) {
+    return saleFromWpc;
+  }
   const pEl = inEl.querySelector(
     'meta[itemprop="price"][content], b[itemprop="price"], [itemprop="price"]'
   );
@@ -495,6 +539,39 @@ function readItempropPriceInScope(scope, anchorInput) {
  * @param {Element|null} [anchorInput]
  * @returns {string} unit or pack string
  */
+/**
+ * UOM in Fisher’s web price block: span.kmd-text-p with leading "/" (e.g. "/ Each", "/ Case of 96 EA").
+ * Skip green discount lines like "34% Off" (kmd-text-green-50, or contains %).
+ * @param {Element} inEl
+ * @returns {string}
+ */
+function readWebpriceContainerUnitInScope(inEl) {
+  if (!inEl || !inEl.querySelector) {
+    return "";
+  }
+  const wpc = inEl.querySelector(".webprice-container");
+  if (!wpc) {
+    return "";
+  }
+  const ps = wpc.querySelectorAll("span.kmd-text-p, p.kmd-text-p");
+  for (let i = 0; i < ps.length; i++) {
+    const el = ps[i];
+    if (el && el.classList && (el.classList.contains("kmd-text-green-50") || /Off\s*$/i.test((el.textContent || "").trim()))) {
+      continue;
+    }
+    const t = (el && el.textContent ? el.textContent : "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!t) {
+      continue;
+    }
+    if (/^\/\s*/.test(t) && !/^\s*\/\s*%/i.test(t) && t.indexOf("%") < 0) {
+      return t.replace(/^\s*\/\s*/, "").trim();
+    }
+  }
+  return "";
+}
+
 function readItempropUnitTextInScope(scope, anchorInput) {
   if (!scope || !scope.querySelector) {
     return "";
@@ -502,6 +579,10 @@ function readItempropUnitTextInScope(scope, anchorInput) {
   const row =
     anchorInput && anchorInput.closest ? anchorInput.closest("li, tr, [role=row]") : null;
   const inEl = row && (scope === row || scope.contains(row)) ? row : scope;
+  const fromWpc = readWebpriceContainerUnitInScope(inEl);
+  if (isNonEmptyTrim(fromWpc)) {
+    return fromWpc;
+  }
   const uEl = inEl.querySelector('span[itemprop="unitText"], [itemprop="unitText"]');
   if (!uEl) {
     return "";
@@ -593,15 +674,25 @@ function scrapeSelectedRadioGroupVariant() {
   let unitSize = readItempropUnitTextInScope(scope, r);
 
   if (!isNonEmptyTrim(price)) {
-    const m = text.match(/[\$€£][\d,]+(?:\.\d{2})?/);
-    if (m) {
-      price = normalizePriceForPanel(m[0]);
+    const s = String(text);
+    const re = /[$€£][\d,]+(?:\.\d{2})?/g;
+    let m;
+    let pick = null;
+    while ((m = re.exec(s)) !== null) {
+      const before = s.slice(0, m.index);
+      if (/\bSave\s*$/i.test(before)) {
+        continue; /* e.g. "Save $9.20" in promo badge — not the SKU line price */
+      }
+      pick = m[0];
+    }
+    if (pick) {
+      price = normalizePriceForPanel(pick);
     }
   }
   if (!isNonEmptyTrim(unitSize)) {
     const u =
       text.match(
-        /Case of \d+[\s\u00A0]*EA|Case of \d+(?:\s*EA|\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μg|mg|μL|uL)\b|(?:(?:^|\s))Each\b|\/\s*Each|\/\s*Case(?!,)|pack of \d+/i
+        /Case of \d+[\s\u00A0]+EA|Case of \d+(?:\s*EA|\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μg|mg|μL|uL)\b|(?:(?:^|[^A-Za-z]))Each\b|\/\s*Each|\/\s*Case of[^%\n]+|pack of \d+/i
       ) || text.match(/[A-Za-z-]{2,}[\s/]+(?:Bottle|Vial|Cubitainer|box|cs|ea)\b/i);
     if (u) {
       unitSize = u[0].replace(/\s+/g, " ").replace(/^\/\s*/, "").trim();
@@ -1041,6 +1132,40 @@ function isLikelyOffPageLink(t) {
 }
 
 /**
+ * Fisher (and similar) price rows put the UOM &lt;input type=radio&gt; before a &lt;label&gt; that has
+ * no `for=…`, so clicking the price / "Each" / "Case" text does not select that option. Delegating
+ * a click to the real radio in that row fixes selection without stopping normal behavior on links.
+ * @param {MouseEvent} e
+ */
+function delegateUomRadioListLabelClick(e) {
+  if (e.button !== 0 || e.defaultPrevented) {
+    return;
+  }
+  const t = e.target;
+  if (!t || !t.closest) {
+    return;
+  }
+  if (t.nodeName === "INPUT" && (t.type || "").toLowerCase() === "radio") {
+    return;
+  }
+  if (t.closest("label[for]")) {
+    return;
+  }
+  if (t.closest("a, button, select, textarea, [contenteditable]")) {
+    return;
+  }
+  const li = t.closest("ul.radio_list li, ul.radio-list li");
+  if (!li) {
+    return;
+  }
+  const inp = li.querySelector("input.uom-input[type=radio], input[type=radio].uom-input");
+  if (!inp) {
+    return;
+  }
+  inp.click();
+}
+
+/**
  * @param {Event} e
  */
 function onDocumentChangeForVariantOrOption(e) {
@@ -1081,7 +1206,12 @@ function onDocumentClickMaybeVariantOrOption(e) {
       return;
     }
   }
-  if (t.closest("tr, [role='row'], [role='radio'], [role='option'], [role='tab']")) {
+  if (
+    t.closest(
+      "tr, [role='row'], [role='radio'], [role='option'], [role='tab'], " +
+        "ul.radio_list, ul.radio-list, li.single_page_price_list"
+    )
+  ) {
     scheduleCaptureRerun();
   }
 }
@@ -1094,6 +1224,7 @@ window.addEventListener("hashchange", function () {
   scheduleCaptureRerun();
 }, false);
 document.addEventListener("click", onDocumentClickMaybeVariantOrOption, true);
+document.addEventListener("click", delegateUomRadioListLabelClick, false);
 
 /* Fisher and similar sites often insert application/ld+json in a follow-up pass; re-run once and watch for that script. */
 (function scheduleJsonLdFollowups() {

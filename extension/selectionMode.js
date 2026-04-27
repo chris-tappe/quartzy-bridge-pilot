@@ -19,8 +19,8 @@
     const s = document.createElement("style");
     s.id = SELECTION_STYLE_ID;
     s.textContent = [
-      "::-moz-selection { background: rgba(239, 68, 68, 0.3) !important; color: inherit; }",
-      "::selection { background: rgba(239, 68, 68, 0.3) !important; color: inherit; }"
+      "::-moz-selection { background: rgba(247, 94, 45, 0.3) !important; color: inherit; }",
+      "::selection { background: rgba(247, 94, 45, 0.3) !important; color: inherit; }"
     ].join("\n");
     (document.head || document.documentElement).appendChild(s);
   }
@@ -61,7 +61,7 @@
     Object.assign(link.style, {
       border: "none",
       background: "transparent",
-      color: "#f87171",
+      color: "#f75e2d",
       fontWeight: "700",
       fontSize: "12px",
       letterSpacing: "0.04em",

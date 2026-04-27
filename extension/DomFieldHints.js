@@ -110,24 +110,221 @@
       if (!isNonEmptyTrim(text)) return;
       const h = hostKey();
       if (!h) return;
-      const el = anchorElementFromRange(range);
-      const sel = el ? buildCssPath(el) : null;
-      if (!sel) {
+      const r = refineWandSelection(field, String(text), range);
+      if (!r || !isNonEmptyTrim(r.value)) {
         return;
       }
       const all = readStore();
       if (!all.hosts[h]) all.hosts[h] = { fields: {} };
       all.hosts[h].fields[field] = {
-        selector: sel,
-        valueSample: String(text).trim().slice(0, 200),
-        updatedAt: Date.now()
+        selector: r.selector,
+        valueSample: String(r.value).trim().slice(0, 200),
+        updatedAt: Date.now(),
+        extract: r.extract || null
       };
       writeStore(all);
+      return r.value;
     };
   }
 
   function isNonEmptyTrim(s) {
     return typeof s === "string" && s.trim().length > 0;
+  }
+
+  function normalizeWandText(s) {
+    return String(s == null ? "" : s)
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Locates the selected string in a normalized full string (case-insensitive fallback).
+   * @param {string} full
+   * @param {string} needle
+   * @returns {{ start: number, end: number }|null}
+   */
+  function findSelectionBoundsInFull(full, needle) {
+    if (!isNonEmptyTrim(full) || !isNonEmptyTrim(needle)) {
+      return null;
+    }
+    const f = normalizeWandText(full);
+    const n = normalizeWandText(needle);
+    let start = f.indexOf(n);
+    if (start < 0) {
+      start = f.toLowerCase().indexOf(n.toLowerCase());
+    }
+    if (start < 0) {
+      return null;
+    }
+    return { start: start, end: start + n.length };
+  }
+
+  /**
+   * When the user’s highlight is a prefix of the first “clause” (e.g. before a comma) in
+   * a pack-size line, expand to the full clause (e.g. "Pkg" → "Pkg of 1").
+   * @param {string} field
+   * @param {string} fullNorm
+   * @param {string} selNorm
+   * @returns {{ expanded: string, extract: object }|null}
+   */
+  function tryExpandUnitSizeToFirstClause(fullNorm, selNorm) {
+    const f = fullNorm;
+    const s = selNorm;
+    const com = f.indexOf(",");
+    if (com < 0 || !s) {
+      return null;
+    }
+    const firstClause = f.slice(0, com).trim();
+    if (!firstClause) {
+      return null;
+    }
+    if (s === firstClause) {
+      return {
+        expanded: firstClause,
+        extract: { type: "toFirstDelimiter", delimiter: "," }
+      };
+    }
+    if (firstClause.length > s.length && firstClause.indexOf(s) === 0) {
+      return {
+        expanded: firstClause,
+        extract: { type: "toFirstDelimiter", delimiter: "," }
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Chooses a saved extraction rule and the value to use right after the user releases the mouse.
+   * @param {string} field
+   * @param {string} rawText
+   * @param {Range|null} range
+   * @returns {{ value: string, extract: object|null, selector: string, el: Element|null }|null}
+   */
+  function refineWandSelection(field, rawText, range) {
+    if (FIELDS.indexOf(field) === -1) {
+      return null;
+    }
+    if (!isNonEmptyTrim(rawText)) {
+      return null;
+    }
+    const el = anchorElementFromRange(range);
+    if (!el) {
+      return null;
+    }
+    const sel = buildCssPath(el);
+    if (!sel) {
+      return null;
+    }
+    const fullRaw = el.innerText != null ? el.innerText : el.textContent || "";
+    const full = normalizeWandText(fullRaw);
+    const nSel = normalizeWandText(rawText);
+    if (!nSel) {
+      return null;
+    }
+
+    if (full === nSel) {
+      return {
+        value: full,
+        extract: { type: "entire" },
+        selector: sel,
+        el: el
+      };
+    }
+
+    if (field === "unitSize") {
+      const u = tryExpandUnitSizeToFirstClause(full, nSel);
+      if (u) {
+        return {
+          value: u.expanded,
+          extract: u.extract,
+          selector: sel,
+          el: el
+        };
+      }
+    }
+
+    const bounds = findSelectionBoundsInFull(full, nSel);
+    if (bounds) {
+      if (bounds.start === 0 && bounds.end === full.length) {
+        return {
+          value: full,
+          extract: { type: "entire" },
+          selector: sel,
+          el: el
+        };
+      }
+      return {
+        value: nSel,
+        extract: {
+          type: "slice",
+          start: bounds.start,
+          end: bounds.end,
+          sample: nSel.slice(0, 200)
+        },
+        selector: sel,
+        el: el
+      };
+    }
+
+    /* Selection doesn’t match innerText 1:1 (e.g. multiple nodes) — still save literal + selector. */
+    return {
+      value: nSel,
+      extract: { type: "literal", sample: nSel.slice(0, 200) },
+      selector: sel,
+      el: el
+    };
+  }
+
+  /**
+   * Applies a stored extraction rule to the current text of the saved anchor node.
+   * @param {string} field
+   * @param {object} ent
+   * @param {string} fullNorm
+   * @returns {string}
+   */
+  function applyExtractToReadText(field, ent, fullNorm) {
+    const f = fullNorm;
+    const ex = ent && ent.extract;
+    if (!ex || ex.type == null) {
+      return f;
+    }
+    if (ex.type === "entire") {
+      return f;
+    }
+    if (ex.type === "toFirstDelimiter" && (ex.delimiter === "," || ex.delimiter === ";")) {
+      const d = ex.delimiter;
+      const i = f.indexOf(d);
+      if (i < 0) {
+        return f;
+      }
+      return f.slice(0, i).trim();
+    }
+    if (ex.type === "slice" && ex.start != null) {
+      const a = ex.start;
+      const b = ex.end != null ? ex.end : f.length;
+      if (a < 0 || a > f.length) {
+        return f;
+      }
+      const s = f.slice(a, Math.min(b, f.length));
+      if (isNonEmptyTrim(s)) {
+        return s.trim();
+      }
+      const sample = (ex && ex.sample) || (ent && ent.valueSample) || "";
+      if (isNonEmptyTrim(sample) && f.indexOf(sample) >= 0) {
+        const again = findSelectionBoundsInFull(f, sample);
+        if (again) {
+          return f.slice(again.start, again.end).trim();
+        }
+      }
+      return f;
+    }
+    if (ex.type === "literal" && isNonEmptyTrim(ex.sample)) {
+      const p = f.indexOf(ex.sample);
+      if (p >= 0) {
+        return ex.sample;
+      }
+    }
+    return f;
   }
 
   /**
@@ -147,7 +344,8 @@
       const n = document.querySelector(ent.selector);
       if (!n) return "";
       const raw = n.innerText != null ? n.innerText : n.textContent || "";
-      return String(raw).replace(/\s+/g, " ").trim();
+      const fullNorm = normalizeWandText(raw);
+      return applyExtractToReadText(field, ent, fullNorm);
     } catch (e) {
       return "";
     }
@@ -174,7 +372,7 @@
   }
 
   /**
-   * @returns {Record<string, { selector: string, valueSample?: string, updatedAt?: number }|null>}
+   * @returns {Record<string, { selector: string, valueSample?: string, updatedAt?: number, extract?: object }|null>}
    */
   function getStoredHintsForDebug() {
     const out = { itemName: null, catalogNumber: null, price: null, unitSize: null };
@@ -185,7 +383,7 @@
     FIELDS.forEach((f) => {
       const e = rec[f];
       if (e && isNonEmptyTrim(e.selector)) {
-        out[f] = { selector: e.selector, valueSample: e.valueSample, updatedAt: e.updatedAt };
+        out[f] = { selector: e.selector, valueSample: e.valueSample, updatedAt: e.updatedAt, extract: e.extract || null };
       }
     });
     return out;
@@ -198,7 +396,8 @@
     saveWandTarget,
     readTextForField,
     applySavedHints,
-    getStoredHintsForDebug
+    getStoredHintsForDebug,
+    refineWandSelection
   };
 
   global.QuartzyDomFieldHints = DomFieldHints;

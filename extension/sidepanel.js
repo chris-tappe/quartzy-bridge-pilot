@@ -40,6 +40,29 @@ const FIELD_DEBUG_LABELS = {
   unitSize: "Unit size"
 };
 
+/**
+ * @param {object|null|undefined} ex
+ * @returns {string}
+ */
+function describeWandExtractRule(ex) {
+  if (!ex || !ex.type) {
+    return "— (legacy: full node text on re-capture; re-wand to add a rule)";
+  }
+  if (ex.type === "entire") {
+    return "Full anchor element (your highlight matched the whole block).";
+  }
+  if (ex.type === "toFirstDelimiter" && (ex.delimiter === "," || ex.delimiter === ";")) {
+    return "Text from the start of the block up to the first " + (ex.delimiter === ";" ? "semicolon" : "comma") + " (e.g. pack / size line).";
+  }
+  if (ex.type === "slice") {
+    return "Character range " + (ex.start != null ? ex.start : "—") + "–" + (ex.end != null ? ex.end : "end") + " in the saved node’s text (stable if the line doesn’t change).";
+  }
+  if (ex.type === "literal") {
+    return "Exact highlight; re-applied if the same text still appears in the node.";
+  }
+  return String(ex.type);
+}
+
 let activePanelView = "request";
 
 /**
@@ -195,6 +218,12 @@ function updateDebugView(data, tab) {
       p5b.textContent = "Last saved sample: " + (hint.valueSample || "—") + " · saved: " + formatDebugTimestamp(hint.updatedAt);
       block.appendChild(p5);
       block.appendChild(p5b);
+      if (hint.extract) {
+        const p5c = document.createElement("p");
+        p5c.className = "debug-p";
+        p5c.textContent = "Wand re-capture: " + describeWandExtractRule(hint.extract);
+        block.appendChild(p5c);
+      }
     } else {
       const p5 = document.createElement("p");
       p5.className = "debug-p";
