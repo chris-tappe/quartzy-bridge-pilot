@@ -432,33 +432,192 @@ function normalizePriceForPanel(raw) {
 }
 
 /**
- * Reads price / pack line from the DOM around the selected radio (JSON-LD often stays on a default offer).
+ * Smallest row-like container for one radio option. Walking the whole &lt;ul&gt; or buy box
+ * merges every option’s price — we need only the checked control’s line (e.g. one &lt;li&gt; or &lt;tr&gt;).
+ * @param {HTMLInputElement} r
+ * @returns {Element|null}
+ */
+function getRadioVariantRowScope(r) {
+  if (!r || r.nodeName !== "INPUT" || (r.type || "").toLowerCase() !== "radio") {
+    return null;
+  }
+  return (
+    r.closest("li") ||
+    r.closest("tr, [role=row]") ||
+    (r.labels && r.labels[0] ? r.labels[0] : null) ||
+    r.closest("label")
+  ) || (function notUlParent() {
+    const p = r.parentElement;
+    if (p && p.nodeName && String(p.nodeName).toLowerCase() === "ul") {
+      return null;
+    }
+    return p;
+  })();
+}
+
+/**
+ * @param {Element} scope
+ * @param {Element|null} [anchorInput] - if the buy box is wide, use the li/tr for this input only
+ * @returns {string} normalized display price
+ */
+function readItempropPriceInScope(scope, anchorInput) {
+  if (!scope || !scope.querySelector) {
+    return "";
+  }
+  const row = anchorInput && anchorInput.closest ? anchorInput.closest("li, tr, [role=row]") : null;
+  const inEl = row && (scope === row || scope.contains(row)) ? row : scope;
+  const pEl = inEl.querySelector(
+    'meta[itemprop="price"][content], b[itemprop="price"], [itemprop="price"]'
+  );
+  if (!pEl) {
+    return "";
+  }
+  const c = pEl.getAttribute && pEl.getAttribute("content");
+  if (c != null && String(c).replace(/\s/g, "") !== "") {
+    const n = parseFloat(String(c).replace(/,/g, "").replace(/^\$*/, ""));
+    if (!Number.isNaN(n)) {
+      try {
+        return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+      } catch (e) {
+        return String(c);
+      }
+    }
+  }
+  const raw = (pEl.textContent || pEl.getAttribute("content") || "").trim();
+  if (!raw) {
+    return "";
+  }
+  return normalizePriceForPanel(raw);
+}
+
+/**
+ * @param {Element} scope
+ * @param {Element|null} [anchorInput]
+ * @returns {string} unit or pack string
+ */
+function readItempropUnitTextInScope(scope, anchorInput) {
+  if (!scope || !scope.querySelector) {
+    return "";
+  }
+  const row =
+    anchorInput && anchorInput.closest ? anchorInput.closest("li, tr, [role=row]") : null;
+  const inEl = row && (scope === row || scope.contains(row)) ? row : scope;
+  const uEl = inEl.querySelector('span[itemprop="unitText"], [itemprop="unitText"]');
+  if (!uEl) {
+    return "";
+  }
+  return (uEl.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Picks the checked UOM/variant by searching inside likely PDP **containers** first so we do
+ * not return the first random :checked radio in the page (e.g. filters) when many groups exist.
+ * @returns {HTMLInputElement|null}
+ */
+function queryCheckedUomRadio() {
+  const strictUom = function (root) {
+    if (!root || !root.querySelector) {
+      return null;
+    }
+    return (
+      root.querySelector("input.uom-input[type=radio]:checked") ||
+      root.querySelector("ul.radio_list input[type=radio]:checked, ul.radio-list input[type=radio]:checked")
+    );
+  };
+  const narrow = [
+    document.getElementById("pricing_container"),
+    document.getElementById("Pricing"),
+    document.querySelector(".pricing_container"),
+    document.querySelector(".product_add_to_cart"),
+    document.querySelector("form[action*=\"cart\"]")
+  ];
+  for (let i = 0; i < narrow.length; i++) {
+    const c = strictUom(narrow[i]);
+    if (c) {
+      return c;
+    }
+  }
+  const uls = document.querySelectorAll("ul.radio_list, ul.radio-list");
+  for (let u = 0; u < uls.length; u++) {
+    const c = uls[u].querySelector("input[type=radio]:checked");
+    if (c) {
+      return c;
+    }
+  }
+  const main = document.querySelector("main");
+  if (main) {
+    const c =
+      strictUom(main) ||
+      main.querySelector(
+        "form[action*=\"cart\"] input[type=radio]:checked, " +
+          "[itemtype*=\"Product\"] input[type=radio]:checked, " +
+          "[itemscope] input.uom-input[type=radio]:checked, " +
+          "[class*=\"pric\" i] input[type=radio]:checked, " +
+          "[id*=\"pric\" i] input[type=radio]:checked, " +
+          "[class*=\"uom\" i] input[type=radio]:checked"
+      );
+    if (c) {
+      return c;
+    }
+  }
+  return (
+    document.querySelector("input.uom-input[type=radio]:checked") ||
+    document.querySelector("form[action*=\"cart\"] input[type=radio]:checked")
+  );
+}
+
+/**
+ * Reads price and unit for the *checked* radio only, using a per-option row scope
+ * (e.g. one &lt;li&gt;) plus schema.org Offer fields when present — not the whole &lt;ul&gt;.
  * @returns {{ price?: string, unitSize?: string }|null}
  */
 function scrapeSelectedRadioGroupVariant() {
-  const r = document.querySelector(
-    'main input[type="radio"]:checked, #content input[type="radio"]:checked, #product-details input[type="radio"]:checked, [class*="product"] input[type="radio"]:checked, body input[type="radio"]:checked'
-  );
+  const r = queryCheckedUomRadio();
   if (!r) {
     return null;
   }
-  let el = r;
-  for (let depth = 0; depth < 10 && el; depth++) {
-    const text = (el.innerText || "").replace(/\s+/g, " ").trim();
-    if (text.length > 8 && text.length < 4000) {
-      const pricePart = text.match(/\$[\d,]+(?:\.\d{2})?/);
-      if (pricePart) {
-        const unitM =
-          text.match(
-            /Case of \d+[\s\u00A0]*EA|Case of \d+(?:\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μL|uL)\b|\bEach\b|\/\s*Each|\/\s*Case|pack of \d+/i
-          ) || text.match(/(?:(?:Bottle|Vial|Case|Box|Unit|cs|pk|ea)\b[^.]{0,24})/i);
-        return {
-          price: pricePart[0],
-          unitSize: unitM ? String(unitM[0]).replace(/\s+/g, " ").trim() : ""
-        };
-      }
+  const scope = getRadioVariantRowScope(r);
+  if (!scope) {
+    return null;
+  }
+  const text = (scope.innerText || scope.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length < 2) {
+    return null;
+  }
+
+  let price = readItempropPriceInScope(scope, r);
+  let unitSize = readItempropUnitTextInScope(scope, r);
+
+  if (!isNonEmptyTrim(price)) {
+    const m = text.match(/[\$€£][\d,]+(?:\.\d{2})?/);
+    if (m) {
+      price = normalizePriceForPanel(m[0]);
     }
-    el = el.parentElement;
+  }
+  if (!isNonEmptyTrim(unitSize)) {
+    const u =
+      text.match(
+        /Case of \d+[\s\u00A0]*EA|Case of \d+(?:\s*EA|\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μg|mg|μL|uL)\b|(?:(?:^|\s))Each\b|\/\s*Each|\/\s*Case(?!,)|pack of \d+/i
+      ) || text.match(/[A-Za-z-]{2,}[\s/]+(?:Bottle|Vial|Cubitainer|box|cs|ea)\b/i);
+    if (u) {
+      unitSize = u[0].replace(/\s+/g, " ").replace(/^\/\s*/, "").trim();
+    }
+  }
+  if (!isNonEmptyTrim(unitSize)) {
+    if (/\bEach\b/i.test(text) && !/Case/i.test(text)) {
+      unitSize = "Each";
+    }
+  }
+
+  if (!isNonEmptyTrim(price) && !isNonEmptyTrim(unitSize)) {
+    return null;
+  }
+  if (isNonEmptyTrim(price)) {
+    return { price, unitSize: isNonEmptyTrim(unitSize) ? unitSize : "" };
   }
   return null;
 }
@@ -531,102 +690,133 @@ function getTableHeaderLabelStrings(table) {
 }
 
 /**
- * @param {HTMLTableRowElement} tr
+ * Native &lt;table&gt; and ARIA grids (e.g. div[role=table]).
+ * @param {Element} tableRoot
+ * @returns {string[]|null}
+ */
+function getTableHeaderLabelStringsForGridRoot(tableRoot) {
+  if (!tableRoot) {
+    return null;
+  }
+  if (tableRoot.nodeName === "TABLE") {
+    return getTableHeaderLabelStrings(tableRoot);
+  }
+  const hRow =
+    tableRoot.querySelector("thead tr") ||
+    tableRoot.querySelector("thead [role=row]") ||
+    tableRoot.querySelector("[role=rowgroup] [role=row]") ||
+    tableRoot.querySelector("[role=row]");
+  if (!hRow) {
+    return null;
+  }
+  return Array.prototype.map
+    .call(
+      hRow.querySelectorAll("th, [role=columnheader], [role=cell]"),
+      function (c) {
+        return (c.innerText || c.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+    )
+    .filter(function (_, i) {
+      return i < 24;
+    });
+}
+
+/**
+ * @param {HTMLTableRowElement|Element} tr
  * @returns {object} partial { itemName?, catalogNumber?, price?, unitSize? }
  */
 function extractFromTableRow(tr) {
   const out = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
-  if (!tr || tr.closest("thead")) {
+  if (!tr) {
     return out;
   }
-  if (!tr.querySelector("td")) {
+  if (tr.closest("thead")) {
     return out;
   }
-  const table = tr.closest("table");
-  if (!table) {
+  if (tr.getAttribute("role") === "columnheader") {
     return out;
   }
-  const headerLabels = getTableHeaderLabelStrings(table);
-  const cells = tr.querySelectorAll("td");
-  if (!cells.length) {
+  if (!tr.querySelector("td, [role=cell]")) {
     return out;
   }
-
-  const byCol = function () {
-    if (!headerLabels || headerLabels.length < 1) {
-      return false;
-    }
-  const n = Math.min(cells.length, headerLabels.length);
-  let got = 0;
-  for (let i = 0; i < n; i++) {
-    const h = headerLabels[i];
-    const colKind = classifyTableHeaderText(h);
-    if (colKind === "ignore" || colKind === "quantity") {
-      continue;
-    }
-    const cellText = (cells[i].innerText || cells[i].textContent || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!isNonEmptyTrim(cellText) || (isNonEmptyTrim(cellText) && cellText.length > 500)) {
-      continue;
-    }
-    if (colKind === "price" && /[\$€£]/.test(cellText)) {
-      out.price = normalizePriceForPanel(cellText.split(/\s/)[0].match(/[\$€£][\d,]+(?:\.\d{2})?/) ? cellText.match(/[\$€£][\d,]+(?:\.\d{2})?/)[0] : cellText);
-        got += 1;
-    } else if (colKind === "catalog" && /[0-9A-Za-z-]{3,}/.test(cellText)) {
-        const line = cellText.split(/\n/)[0].trim();
-        const sku = line.match(/[A-Z0-9][A-Z0-9._/-]{2,32}/i);
-        out.catalogNumber = sku ? sku[0] : line.slice(0, 40);
-        got += 1;
-    } else if (colKind === "size" || colKind === "product") {
-        const t = cellText.split(/\n/).map(function (x) { return x.trim(); }).filter(Boolean).join(" · ");
-        if (colKind === "size") {
-          out.unitSize = t;
-        } else {
-          out.itemName = t;
-        }
-        if (t) got += 1;
-      }
-    }
-  return got > 0;
-  };
+  const tableRoot = tr.closest("table, [role=table]") || tr.closest("table");
+  const cells = tr.querySelectorAll("td, [role=cell]");
 
   const heur = function (full) {
-  const p = full.match(/[\$€£][\d,]+(?:\.\d{2})?/);
-  if (p) {
-    out.price = normalizePriceForPanel(p[0]);
-  }
-  const sizeLike = full.match(
-    /(?:\d+|\d+\s*\/\s*\d+)\s*(?:mL|L|G|g|ug|μg|mg|tests?)\b|Case of \d+[^.\n]{0,18}|^Each$|\d+\s*x\s*\d+|\b\d+[\s\u00A0]*L\b|Cubitainer|bottle|vial/i
-  );
-  if (sizeLike) {
-    out.unitSize = sizeLike[0].replace(/\s+/g, " ").trim();
-  }
-  const numWords = full.split(/[\s\n,|]+/).filter(function (w) { return w.length; });
-  for (let w = 0; w < Math.min(numWords.length, 4); w++) {
-    if (/^\d{3,}$|^[A-Z0-9][A-Z0-9._-]{2,20}$/i.test(numWords[w]) && !/^\$/.test(numWords[w])) {
-      if (!isNonEmptyTrim(out.catalogNumber)) {
-        out.catalogNumber = numWords[w];
-      }
-      break;
+    const p = full.match(/[\$€£][\d,]+(?:\.\d{2})?/);
+    if (p) {
+      out.price = normalizePriceForPanel(p[0]);
     }
-  }
+    const sizeLike = full.match(
+      /(?:\d+|\d+\s*\/\s*\d+)\s*(?:mL|L|G|g|ug|μg|mg|tests?)\b|Case of \d+[^.\n]{0,22}|^Each$|\d+\s*x\s*\d+|\b\d+[\s\u00A0]*L\b|Cubitainer|bottle|vial|tests?\b/i
+    );
+    if (sizeLike) {
+      out.unitSize = sizeLike[0].replace(/\s+/g, " ").trim();
+    }
+    const numWords = full.split(/[\s\n,|]+/).filter(function (w) { return w.length; });
+    for (let w = 0; w < Math.min(numWords.length, 4); w++) {
+      if (/^\d{3,}$|^[A-Z0-9][A-Z0-9._-]{2,20}$/i.test(numWords[w]) && !/^\$/.test(numWords[w])) {
+        if (!isNonEmptyTrim(out.catalogNumber)) {
+          out.catalogNumber = numWords[w];
+        }
+        break;
+      }
+    }
   };
 
-  if (!byCol()) {
-    const full = tr.innerText.replace(/\s+/g, " ").trim();
-    if (full.length < 3 || full.length > 5000) {
-      return out;
-    }
-    heur(full);
+  if (!tableRoot) {
+    heur(tr.innerText.replace(/\s+/g, " ").trim());
   } else {
-    const full2 = tr.innerText.replace(/\s+/g, " ").trim();
-    if (
-      !isNonEmptyTrim(out.price) ||
-      !isNonEmptyTrim(out.unitSize) ||
-      !isNonEmptyTrim(out.catalogNumber)
-    ) {
-      heur(full2);
+    const headerLabels = getTableHeaderLabelStringsForGridRoot(tableRoot);
+    if (!headerLabels || headerLabels.length < 1) {
+      heur(tr.innerText.replace(/\s+/g, " ").trim());
+    } else {
+      const n = Math.min(cells.length, headerLabels.length);
+      let got = 0;
+      for (let i = 0; i < n; i++) {
+        const h = headerLabels[i];
+        const colKind = classifyTableHeaderText(h);
+        if (colKind === "ignore" || colKind === "quantity") {
+          continue;
+        }
+        const cellText = (cells[i].innerText || cells[i].textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!isNonEmptyTrim(cellText) || (isNonEmptyTrim(cellText) && cellText.length > 500)) {
+          continue;
+        }
+        if (colKind === "price" && /[\$€£]/.test(cellText)) {
+          const m = cellText.match(/[\$€£][\d,]+(?:\.\d{2})?/);
+          if (m) {
+            out.price = normalizePriceForPanel(m[0]);
+          }
+          got += 1;
+        } else if (colKind === "catalog" && /[0-9A-Za-z-]{3,}/.test(cellText)) {
+          const line = cellText.split("\n")[0].trim();
+          const sku = line.match(/[A-Z0-9][A-Z0-9._/-]{2,32}/i);
+          out.catalogNumber = sku ? sku[0] : line.slice(0, 40);
+          got += 1;
+        } else if (colKind === "size" || colKind === "product") {
+          const t = cellText
+            .split("\n")
+            .map(function (x) { return x.trim(); })
+            .filter(Boolean)
+            .join(" · ");
+          if (colKind === "size") {
+            out.unitSize = t;
+          } else {
+            out.itemName = t;
+          }
+          if (t) {
+            got += 1;
+          }
+        }
+      }
+      if (!isNonEmptyTrim(out.price) || !isNonEmptyTrim(out.unitSize) || !isNonEmptyTrim(out.catalogNumber)) {
+        heur(tr.innerText.replace(/\s+/g, " ").trim());
+      }
     }
   }
   if (isNonEmptyTrim(out.price) && !/[\$€£]/.test(String(out.price))) {
@@ -640,8 +830,11 @@ function tableRowExtractionIsUseful(partial) {
   const hasCat = isNonEmptyTrim(partial.catalogNumber);
   const hasSize = isNonEmptyTrim(partial.unitSize);
   const hasName = isNonEmptyTrim(partial.itemName);
-  const score = (hasPrice ? 2 : 0) + (hasCat ? 1 : 0) + (hasSize ? 1 : 0) + (hasName ? 1 : 0);
-  return score >= 2 || (hasPrice && (hasSize || hasCat)) || (hasCat && hasSize);
+  if (hasPrice) {
+    return true;
+  }
+  const score = (hasCat ? 1 : 0) + (hasSize ? 1 : 0) + (hasName ? 1 : 0);
+  return score >= 2 || (hasCat && hasSize) || (hasName && (hasCat || hasSize));
 }
 
 /**
@@ -678,10 +871,19 @@ function applyTableRowVariantToCapture(partial) {
  * @returns {boolean} true if this click was treated as a variant row (skip debounced re-run)
  */
 function tryApplyTableRowAsVariant(tr, target) {
-  if (!tr || !tr.querySelector("td") || tr.closest("thead")) {
+  if (!tr) {
+    return false;
+  }
+  if (tr.closest("thead")) {
+    return false;
+  }
+  if (!tr.querySelector("td, [role=cell]")) {
     return false;
   }
   if (target && target.nodeName && String(target.nodeName).toLowerCase() === "a" && isLikelyOffPageLink(target)) {
+    return false;
+  }
+  if (!tr.closest("table, [role=table]")) {
     return false;
   }
   const partial = extractFromTableRow(tr);
@@ -772,8 +974,7 @@ async function doCaptureRun() {
     let merged = mres.merged;
     fieldSources = mres.fieldSources;
     let aiR = mres.aiRefined;
-    mergeSelectedRadioVariantInto(merged, fieldSources, aiR);
-    /* Per-site saved wand selectors override merged fields; session wand is applied in displayCaptureFields. */
+    /* Per-site saved wand selectors override JSON-LD; then the *visible* selected UOM/radio wins price & unit. */
     if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
       const withHints = QuartzyDomFieldHints.applySavedHints(merged, fieldSources, normalizeWandValue);
       merged = withHints.merged;
@@ -784,6 +985,7 @@ async function doCaptureRun() {
         }
       });
     }
+    mergeSelectedRadioVariantInto(merged, fieldSources, aiR);
     applyAndBroadcastProduct(merged, fieldSources, aiR);
   } catch (err) {
     console.warn("[Quartzy Bridge] Extraction on page failed:", err && err.message);
@@ -873,13 +1075,10 @@ function onDocumentClickMaybeVariantOrOption(e) {
   if (!t || !t.closest) {
     return;
   }
-  const tr = t.closest("tr");
+  const tr = t.closest("tr, [role=row]");
   if (tr) {
-    const table = tr.closest("table");
-    if (table && !tr.closest("thead")) {
-      if (tryApplyTableRowAsVariant(tr, t)) {
-        return;
-      }
+    if (tryApplyTableRowAsVariant(tr, t)) {
+      return;
     }
   }
   if (t.closest("tr, [role='row'], [role='radio'], [role='option'], [role='tab']")) {
