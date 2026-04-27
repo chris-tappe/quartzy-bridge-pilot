@@ -7,6 +7,8 @@ const userValues = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
 let captureAutomated = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
 let exFieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
 let exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSize: false };
+/** For side panel debug tab: first merge layer (H1, generic unit, JSON-LD paths) before AI / saved DOM / wand. */
+let lastHeuristicProvenance = { itemName: "—", catalogNumber: "—", price: "—", unitSize: "—" };
 const WAND_FIELD_SET = { itemName: 1, catalogNumber: 1, price: 1, unitSize: 1 };
 
 /**
@@ -57,6 +59,56 @@ function mergeProductFields(exResult, o) {
 
 function isNonEmptyTrim(s) {
   return typeof s === "string" && s.trim().length > 0;
+}
+
+/**
+ * Explains the first pass (mergeProductFields) before AI, saved-DOM, or this-session wand.
+ * @param {object} merged0
+ * @param {object} ex
+ * @param {string} h1
+ * @param {string} uDom
+ */
+function computeHeuristicProvenance(merged0, ex, h1, uDom) {
+  const p = { itemName: "—", catalogNumber: "—", price: "—", unitSize: "—" };
+  const clean =
+    typeof QuartzyExtractionService !== "undefined"
+      ? QuartzyExtractionService.cleanProductText.bind(QuartzyExtractionService)
+      : function (t) {
+          return t;
+        };
+  const ef = (ex && ex.fields) || {};
+  const fs = (ex && ex.fieldSources) || { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  const h1c = h1 ? clean(String(h1).trim()) : "";
+
+  if (isNonEmptyTrim(ef.itemName)) {
+    p.itemName = fs.itemName ? "JSON-LD / UCP: " + fs.itemName : "JSON-LD / UCP: product name";
+  } else if (isNonEmptyTrim(merged0.itemName)) {
+    p.itemName =
+      h1c && clean(String(merged0.itemName)) === h1c
+        ? "Page: first <h1> or <title> segment (before |), if JSON-LD has no name"
+        : "Page: document title segment (e.g. before | in <title>)";
+  }
+
+  if (isNonEmptyTrim(ef.catalogNumber)) {
+    p.catalogNumber = fs.catalogNumber
+      ? "JSON-LD / UCP: " + fs.catalogNumber
+      : "JSON-LD / UCP: SKU, catalog #, or GTIN";
+  }
+
+  if (isNonEmptyTrim(ef.price)) {
+    p.price = fs.price ? "JSON-LD / UCP: " + fs.price : "JSON-LD / UCP: price / offer";
+  }
+
+  if (isNonEmptyTrim(ef.unitSize)) {
+    p.unitSize = fs.unitSize ? "JSON-LD / UCP: " + fs.unitSize : "JSON-LD / UCP: unit or pack size";
+  } else if (isNonEmptyTrim(merged0.unitSize) && (uDom != null && uDom !== "")) {
+    p.unitSize =
+      uDom && String(uDom).toLowerCase() !== "each"
+        ? "Generic: DOM (classes like .unit_string, [itemprop=unitText], etc.)"
+        : "Default: 'Each' and generic size hints (no unit in JSON-LD)";
+  }
+
+  return p;
 }
 
 function vendorLabel() {
@@ -200,6 +252,7 @@ function resetCaptureState() {
   captureAutomated = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
   exFieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
   exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSize: false };
+  lastHeuristicProvenance = { itemName: "—", catalogNumber: "—", price: "—", unitSize: "—" };
 }
 
 function normalizeWandValue(field, raw) {
@@ -216,6 +269,16 @@ function normalizeWandValue(field, raw) {
     return QuartzyExtractionService.cleanProductText(t);
   }
   return t;
+}
+
+function enrichCaptureDataForDebug(data) {
+  data.heuristicProvenance = { ...lastHeuristicProvenance };
+  if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.getStoredHintsForDebug === "function") {
+    data.domHintSelectors = QuartzyDomFieldHints.getStoredHintsForDebug();
+  } else {
+    data.domHintSelectors = { itemName: null, catalogNumber: null, price: null, unitSize: null };
+  }
+  return data;
 }
 
 function pushCaptureProgress(overrides) {
@@ -236,6 +299,7 @@ function pushCaptureProgress(overrides) {
     capturePhase: o.capturePhase,
     statusMessage: o.statusMessage
   };
+  enrichCaptureDataForDebug(data);
   chrome.runtime.sendMessage({ type: "PRODUCT_CAPTURE", data });
 }
 
@@ -258,6 +322,7 @@ function broadcastCurrentCapture(overrides) {
   } else {
     data.isLoading = false;
   }
+  enrichCaptureDataForDebug(data);
   chrome.runtime.sendMessage({ type: "PRODUCT_CAPTURE", data });
 }
 
@@ -299,6 +364,12 @@ function emitBlankCapture() {
   let merged = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
   let fieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
   let aiR = { itemName: false, catalogNumber: false, price: false, unitSize: false };
+  lastHeuristicProvenance = {
+    itemName: "No structured pass (extraction module missing or failed).",
+    catalogNumber: "No structured pass (extraction module missing or failed).",
+    price: "No structured pass (extraction module missing or failed).",
+    unitSize: "No structured pass (extraction module missing or failed)."
+  };
   if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
     const w = QuartzyDomFieldHints.applySavedHints(merged, fieldSources, normalizeWandValue);
     merged = w.merged;
@@ -332,6 +403,7 @@ function run() {
 }
 async function doCaptureRun() {
   try {
+    lastHeuristicProvenance = { itemName: "—", catalogNumber: "—", price: "—", unitSize: "—" };
     pushCaptureProgress({
       capturePhase: "json-ld",
       statusMessage: "Reading JSON-LD, UCP meta, and .well-known data…"
@@ -349,6 +421,7 @@ async function doCaptureRun() {
       price: priceFromEx,
       vendor: vendorLabel()
     });
+    lastHeuristicProvenance = computeHeuristicProvenance(merged0, ex, h1, uDom);
     let fieldSources = { ...((ex && ex.fieldSources) || { itemName: null, catalogNumber: null, price: null, unitSize: null }) };
     const needAi = hasBigFourGap(merged0) || hasProductVariantInScope();
     let ctx = "";

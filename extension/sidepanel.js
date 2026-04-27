@@ -23,9 +23,212 @@ const headerStatusText = document.getElementById("headerStatusText");
 const headerStatusSpinner = document.getElementById("headerStatusSpinner");
 const headerStatusLine = document.getElementById("headerStatusLine");
 const panelForm = document.getElementById("panelForm");
+const viewRequest = document.getElementById("viewRequest");
+const viewDebug = document.getElementById("viewDebug");
+const tabNewRequest = document.getElementById("tabNewRequest");
+const tabDebug = document.getElementById("tabDebug");
+const debugContext = document.getElementById("debugContext");
+const debugFieldsEl = document.getElementById("debugFields");
+
+const FIELD_DEBUG_LABELS = {
+  itemName: "Item name",
+  catalogNumber: "Catalog #",
+  price: "Price",
+  unitSize: "Unit size"
+};
+
+let activePanelView = "request";
 
 const IDLE_STATUS =
   "Done. If a field is still empty, wait for the status above to say “Done” (spinner off), then use a wand to map that field on the product page.";
+
+/**
+ * @param {string|null|undefined} raw
+ * @returns {{ label: string, body: string }}
+ */
+function humanizeFieldSourceKey(raw) {
+  const t = raw == null || String(raw).trim() === "" ? null : String(raw).trim();
+  if (!t) {
+    return {
+      label: "Unspecified (not a single code path)",
+      body:
+        "The extension did not tag this field. The value can still come from a merge of JSON-LD, page heading, or generic unit patterns without a specific token."
+    };
+  }
+  if (t === "magic-wand") {
+    return {
+      label: "User highlight (magic wand)",
+      body: "You just selected this text on the product page. It overrides the automated value for the current session and is also saved to localStorage as a per-site DOM target when a selector could be built."
+    };
+  }
+  if (t === "dom-hint") {
+    return {
+      label: "Saved DOM (localStorage)",
+      body:
+        "A CSS path saved from a past wand for this site was used to re-read this field (see stored selector on this field below). Overrides JSON-LD / AI for that field."
+    };
+  }
+  if (t === "ai-fallback") {
+    return {
+      label: "AI (page text)",
+      body:
+        "The on-page AI fallback (Gemini-style extraction from a minimized product region and optional [USER_SELECTED_OPTION] markers) filled or refined this field."
+    };
+  }
+  if (t === "ucp-well-known") {
+    return { label: "UCP: .well-known/ucp", body: "Product hints from the site’s ucp well-known JSON when present." };
+  }
+  if (t.indexOf("json-ld:") === 0) {
+    return { label: "JSON-LD", body: "Structured data path: " + t };
+  }
+  if (t.indexOf("ucp:") === 0) {
+    return { label: "UCP meta", body: "Microformat / ucp: meta tag: " + t };
+  }
+  return { label: t, body: "Internal field source key from the content script or extractor." };
+}
+
+function formatDebugTimestamp(ts) {
+  if (ts == null) return "—";
+  const n = Number(ts);
+  if (Number.isNaN(n)) return "—";
+  try {
+    return new Date(n).toLocaleString();
+  } catch (e) {
+    return "—";
+  }
+}
+
+/**
+ * @param {object|null} data
+ * @param {chrome.tabs.Tab|null} tab
+ */
+function updateDebugView(data, tab) {
+  if (!debugContext || !debugFieldsEl) return;
+  if (!data || (tab && isQuartzyDomainUrl(tab.url))) {
+    debugContext.textContent = "No debug data for this context (e.g. Quartzy app tab, or no capture).";
+    debugFieldsEl.textContent = "";
+    return;
+  }
+  if (!isMappableContentUrl((data && data.url) || (tab && tab.url))) {
+    debugContext.textContent = "This tab is not a normal product page, so the extension does not attach capture provenance here.";
+    debugFieldsEl.textContent = "";
+    return;
+  }
+  const loading = data.isLoading === true;
+  const v = (data && data.vendor) || "—";
+  const u = (data && data.url) || "—";
+  const phase = (data && data.capturePhase) || "—";
+  const lines = [
+    "Vendor (hostname): " + v,
+    "URL: " + u,
+    "Status: " + (loading ? "LOADING" : "DONE") + " · phase: " + phase
+  ];
+  debugContext.textContent = lines.join("\n");
+  debugFieldsEl.textContent = "";
+
+  FIELDS.forEach((f) => {
+    const block = document.createElement("div");
+    block.className = "debug-section";
+    const title = document.createElement("div");
+    title.className = "debug-kicker";
+    title.textContent = (FIELD_DEBUG_LABELS[f] || f).toUpperCase();
+    const val = isFilled(data, f) ? String(data[f]) : "— (empty)";
+    const p1 = document.createElement("p");
+    p1.className = "debug-p";
+    p1.textContent = "Current value: " + val;
+    const rawSrc = data.fieldSources && data.fieldSources[f] != null ? data.fieldSources[f] : null;
+    const h = humanizeFieldSourceKey(rawSrc);
+    const p2 = document.createElement("p");
+    p2.className = "debug-p";
+    p2.appendChild(document.createTextNode("Final source: " + h.label + ". "));
+    const s = document.createElement("span");
+    s.className = "debug-code";
+    s.style.display = "inline";
+    s.style.padding = "2px 4px";
+    s.style.marginTop = "0";
+    s.textContent = "Key: " + (rawSrc == null || rawSrc === "" ? "(null/empty)" : String(rawSrc));
+    p2.appendChild(s);
+    const p2b = document.createElement("p");
+    p2b.className = "debug-p";
+    p2b.textContent = h.body;
+    const p3 = document.createElement("p");
+    p3.className = "debug-p";
+    p3.textContent = "First merge (H1, JSON-LD before AI / saved DOM, generic unit): " + (data.heuristicProvenance && data.heuristicProvenance[f] != null ? String(data.heuristicProvenance[f]) : "—");
+    const aiN = data.aiRefined && data.aiRefined[f] === true;
+    const p4 = document.createElement("p");
+    p4.className = "debug-p";
+    p4.textContent = "AI badge for this field in UI: " + (aiN ? "yes (aiRefined true)" : "no");
+    block.appendChild(title);
+    block.appendChild(p1);
+    block.appendChild(p2);
+    block.appendChild(p2b);
+    block.appendChild(p3);
+    block.appendChild(p4);
+    const hint = data.domHintSelectors && data.domHintSelectors[f];
+    if (hint && hint.selector) {
+      const p5 = document.createElement("p");
+      p5.className = "debug-p";
+      p5.appendChild(document.createTextNode("Stored per-site CSS selector (localStorage on this origin): "));
+      const code = document.createElement("span");
+      code.className = "debug-code";
+      code.textContent = hint.selector;
+      p5.appendChild(code);
+      const p5b = document.createElement("p");
+      p5b.className = "debug-p";
+      p5b.textContent = "Last saved sample: " + (hint.valueSample || "—") + " · saved: " + formatDebugTimestamp(hint.updatedAt);
+      block.appendChild(p5);
+      block.appendChild(p5b);
+    } else {
+      const p5 = document.createElement("p");
+      p5.className = "debug-p";
+      p5.textContent = "No stored per-site CSS selector in localStorage for this field (wand again to build one).";
+      block.appendChild(p5);
+    }
+    debugFieldsEl.appendChild(block);
+  });
+}
+
+function setPanelView(view) {
+  if (view !== "request" && view !== "debug") return;
+  activePanelView = view;
+  const isReq = view === "request";
+  if (viewRequest) viewRequest.hidden = !isReq;
+  if (viewDebug) viewDebug.hidden = isReq;
+  if (tabNewRequest) {
+    tabNewRequest.classList.toggle("is-active", isReq);
+    tabNewRequest.setAttribute("aria-selected", isReq ? "true" : "false");
+  }
+  if (tabDebug) {
+    tabDebug.classList.toggle("is-active", !isReq);
+    tabDebug.setAttribute("aria-selected", isReq ? "false" : "true");
+  }
+  getActiveTabKey((tabId, tab) => {
+    if (tabId == null) {
+      if (!isReq) {
+        if (debugContext) {
+          debugContext.textContent = "No active tab.";
+        }
+        if (debugFieldsEl) debugFieldsEl.textContent = "";
+      }
+      return;
+    }
+    const key = "data_" + tabId;
+    chrome.storage.local.get([key], (result) => {
+      if (isReq) return;
+      const d = result[key];
+      if (d) {
+        updateDebugView(d, tab);
+      } else {
+        if (debugContext) {
+          debugContext.textContent = "No capture data. Focus a product tab and wait for capture.";
+        }
+        if (debugFieldsEl) {
+          debugFieldsEl.textContent = "";
+        }
+      }
+    });
+  });
+}
 
 function isQuartzyDomainUrl(url) {
   if (!url) return false;
@@ -172,6 +375,9 @@ function showData(data, tab) {
   if (addToList) {
     addToList.disabled = !canAddToList(data);
   }
+  if (activePanelView === "debug") {
+    updateDebugView(data, tab);
+  }
 }
 
 function getActiveTabKey(cb) {
@@ -199,6 +405,15 @@ function loadForActiveTab() {
 }
 
 loadForActiveTab();
+
+if (tabNewRequest && tabDebug) {
+  tabNewRequest.addEventListener("click", () => {
+    setPanelView("request");
+  });
+  tabDebug.addEventListener("click", () => {
+    setPanelView("debug");
+  });
+}
 
 function sendWand(field) {
   getActiveTabKey((tabId, tab) => {

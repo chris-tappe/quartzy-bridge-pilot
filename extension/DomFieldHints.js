@@ -173,13 +173,32 @@
     return { merged: m, fieldSources: src };
   }
 
+  /**
+   * @returns {Record<string, { selector: string, valueSample?: string, updatedAt?: number }|null>}
+   */
+  function getStoredHintsForDebug() {
+    const out = { itemName: null, catalogNumber: null, price: null, unitSize: null };
+    const h = hostKey();
+    if (!h) return out;
+    const all = readStore();
+    const rec = (all.hosts && all.hosts[h] && all.hosts[h].fields) || {};
+    FIELDS.forEach((f) => {
+      const e = rec[f];
+      if (e && isNonEmptyTrim(e.selector)) {
+        out[f] = { selector: e.selector, valueSample: e.valueSample, updatedAt: e.updatedAt };
+      }
+    });
+    return out;
+  }
+
   const DomFieldHints = {
     FIELDS,
     hostKey,
     buildCssPath,
     saveWandTarget,
     readTextForField,
-    applySavedHints
+    applySavedHints,
+    getStoredHintsForDebug
   };
 
   global.QuartzyDomFieldHints = DomFieldHints;

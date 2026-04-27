@@ -81,14 +81,66 @@
       font-size: 13px;
       line-height: 1.5;
     }
-    .new-request h2 {
+    .view-tabs {
+      display: flex;
+      gap: 0;
+      margin: 0 0 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .view-tab {
+      flex: 1;
+      margin: 0;
+      padding: 8px 10px;
       font-size: 12px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.04em;
       color: var(--muted);
-      margin: 0 0 8px 0;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      font-family: inherit;
     }
+    .view-tab:hover { color: var(--text); background: #f3f4f6; }
+    .view-tab.is-active {
+      color: var(--text);
+      border-bottom-color: var(--red);
+    }
+    .view-panel[hidden] { display: none !important; }
+    .debug-card { font-size: 12px; }
+    .debug-kicker {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin: 0 0 4px 0;
+    }
+    .debug-p {
+      color: var(--text);
+      line-height: 1.45;
+      margin: 0 0 12px 0;
+    }
+    .debug-code {
+      display: block;
+      font-size: 11px;
+      font-family: ui-monospace, "Cascadia Code", Menlo, Monaco, monospace;
+      background: #f3f4f6;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #374151;
+    }
+    .debug-section {
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .debug-section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .new-request h2 { display: none; }
     .card {
       background: #fff;
       border: 1px solid var(--border);
@@ -271,7 +323,11 @@
   <p class="empty" id="emptyState">Select a website tab in this window. When a page loads, its capture will appear here.</p>
 
   <div class="new-request" id="dataState" style="display: none;">
-    <h2 id="formTitle">New request</h2>
+    <div class="view-tabs" role="tablist" aria-label="Panel view">
+      <button type="button" class="view-tab is-active" data-view="request" id="tabNewRequest" role="tab" aria-selected="true" aria-controls="viewRequest">New request</button>
+      <button type="button" class="view-tab" data-view="debug" id="tabDebug" role="tab" aria-selected="false" aria-controls="viewDebug">Debug</button>
+    </div>
+    <div class="view-panel" id="viewRequest" role="tabpanel" aria-labelledby="tabNewRequest">
     <div class="card" id="panelForm" aria-busy="false">
       <div class="row" data-input-row="itemName">
         <div class="row-h">
@@ -322,6 +378,13 @@
         <input type="number" class="qty-input" id="lineQuantity" min="1" max="999999" value="1" inputmode="numeric" aria-label="Quantity for this line" />
       </div>
       <button type="button" class="add-btn" id="addToList" disabled>Add to request list</button>
+    </div>
+    </div>
+    <div class="view-panel" id="viewDebug" role="tabpanel" aria-labelledby="tabDebug" hidden>
+      <div class="card debug-card" id="debugCard">
+        <p class="debug-p" id="debugContext">No capture for this tab yet.</p>
+        <div class="debug-fields" id="debugFields"></div>
+      </div>
     </div>
   </div>
 
