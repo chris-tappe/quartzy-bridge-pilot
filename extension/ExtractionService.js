@@ -377,6 +377,7 @@
   const ExtractionService = {
     FIELDS,
     cleanProductText,
+    normalizePrice,
     extractFromDocument,
     extractFromJsonLD,
     async run(doc) {

@@ -10,7 +10,13 @@ const toastEl = document.getElementById("toast");
 const lineQuantityEl = document.getElementById("lineQuantity");
 const requestListEl = document.getElementById("requestList");
 const requestListEmpty = document.getElementById("requestListEmpty");
+const requestListBody = document.getElementById("requestListBody");
+const requestListToggle = document.getElementById("requestListToggle");
+const headerCaptureLive = document.getElementById("headerCaptureLive");
+const cancelAddEl = document.getElementById("cancelAdd");
+const addSuccessWrap = document.getElementById("addSuccessWrap");
 const FIELDS = ["itemName", "catalogNumber", "price", "unitSize"];
+const REQUEST_LIST_UI_KEY = "quartzyConnect.requestListExpanded";
 
 const valueEls = {
   itemName: document.getElementById("vItemName"),
@@ -19,9 +25,6 @@ const valueEls = {
   unitSize: document.getElementById("vUnit")
 };
 
-const headerStatusText = document.getElementById("headerStatusText");
-const headerStatusSpinner = document.getElementById("headerStatusSpinner");
-const headerStatusLine = document.getElementById("headerStatusLine");
 const panelForm = document.getElementById("panelForm");
 const viewRequest = document.getElementById("viewRequest");
 const viewDebug = document.getElementById("viewDebug");
@@ -38,9 +41,6 @@ const FIELD_DEBUG_LABELS = {
 };
 
 let activePanelView = "request";
-
-const IDLE_STATUS =
-  "Done. If a field is still empty, wait for the status above to say “Done” (spinner off), then use a wand to map that field on the product page.";
 
 /**
  * @param {string|null|undefined} raw
@@ -61,18 +61,31 @@ function humanizeFieldSourceKey(raw) {
       body: "You just selected this text on the product page. It overrides the automated value for the current session and is also saved to localStorage as a per-site DOM target when a selector could be built."
     };
   }
+  if (t === "table-row") {
+    return {
+      label: "Table row (your selection)",
+      body:
+        "A product variant was inferred from the table row you clicked. Edit any field in the side panel before adding to your list if needed."
+    };
+  }
+  if (t === "variant-dom") {
+    return {
+      label: "Visible variant (radio or row)",
+      body: "Price or unit was read from the page near the selected option (e.g. checked radio) so the capture matches the variant you chose, not only static JSON-LD."
+    };
+  }
   if (t === "dom-hint") {
     return {
       label: "Saved DOM (localStorage)",
       body:
-        "A CSS path saved from a past wand for this site was used to re-read this field (see stored selector on this field below). Overrides JSON-LD / AI for that field."
+        "A CSS path saved from a past wand for this site was used to re-read this field (see stored selector on this field below). Overrides JSON-LD for that field; optional on-page AI is not used in the default build."
     };
   }
   if (t === "ai-fallback") {
     return {
-      label: "AI (page text)",
+      label: "AI (page text) — when enabled in content",
       body:
-        "The on-page AI fallback (Gemini-style extraction from a minimized product region and optional [USER_SELECTED_OPTION] markers) filled or refined this field."
+        "The content script can call an on-page AI path (on-device or proxy) from a minimized product region. This is off by default (USE_AI_EXTRACTION in content.js). When off, you should not see this source for new captures."
     };
   }
   if (t === "ucp-well-known") {
@@ -153,11 +166,15 @@ function updateDebugView(data, tab) {
     p2b.textContent = h.body;
     const p3 = document.createElement("p");
     p3.className = "debug-p";
-    p3.textContent = "First merge (H1, JSON-LD before AI / saved DOM, generic unit): " + (data.heuristicProvenance && data.heuristicProvenance[f] != null ? String(data.heuristicProvenance[f]) : "—");
+    p3.textContent =
+      "First merge (H1, JSON-LD, generic unit), before per-site saved DOM and session wand: " +
+      (data.heuristicProvenance && data.heuristicProvenance[f] != null ? String(data.heuristicProvenance[f]) : "—");
     const aiN = data.aiRefined && data.aiRefined[f] === true;
     const p4 = document.createElement("p");
     p4.className = "debug-p";
-    p4.textContent = "AI badge for this field in UI: " + (aiN ? "yes (aiRefined true)" : "no");
+    p4.textContent =
+      "aiRefined for this field (only if on-page AI is enabled in the content script): " +
+      (aiN ? "yes" : "no");
     block.appendChild(title);
     block.appendChild(p1);
     block.appendChild(p2);
@@ -247,10 +264,34 @@ function isFilled(data, key) {
   return data && data[key] != null && String(data[key]).trim().length > 0;
 }
 
+function isNonEmptyTrim(s) {
+  return typeof s === "string" && s.trim().length > 0;
+}
+
+function getPanelFieldValue(field) {
+  const el = valueEls[field];
+  if (!el) return "";
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+    return String(el.value != null ? el.value : "").trim();
+  }
+  return String(el.textContent || "").trim();
+}
+
+function setPanelFieldValueFromData(field, data) {
+  const el = valueEls[field];
+  if (!el) return;
+  const v = data && data[field] != null ? String(data[field]) : "";
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+    el.value = v;
+  } else {
+    el.textContent = v || "—";
+  }
+}
+
 function canAddToList(data) {
   if (!data) return false;
   if (data.isLoading === true) return false;
-  return FIELDS.every((k) => isFilled(data, k));
+  return FIELDS.every((k) => isNonEmptyTrim(getPanelFieldValue(k)));
 }
 
 /** Wands work on any normal web page the extension can read (https/http in the user’s tab). */
@@ -260,6 +301,8 @@ function isMappableContentUrl(url) {
 }
 
 let toastTimer = null;
+let addSuccessTimer = null;
+
 function showToast(message) {
   toastEl.textContent = message;
   toastEl.classList.add("show");
@@ -269,6 +312,16 @@ function showToast(message) {
   }, 3000);
 }
 
+function showAddSuccessPill() {
+  if (!addSuccessWrap) return;
+  addSuccessWrap.hidden = false;
+  if (addSuccessTimer) clearTimeout(addSuccessTimer);
+  addSuccessTimer = setTimeout(() => {
+    addSuccessWrap.hidden = true;
+    addSuccessTimer = null;
+  }, 3500);
+}
+
 function isWandContextOk(data, tab) {
   return isMappableContentUrl((tab && tab.url) || (data && data.url));
 }
@@ -276,10 +329,15 @@ function isWandContextOk(data, tab) {
 function updateRowBadges(data, tab) {
   const loading = data && data.isLoading === true;
   FIELDS.forEach((f) => {
-    const hasVal = isFilled(data, f);
     const vEl = valueEls[f];
+    const isFieldInput = vEl && (vEl.tagName === "INPUT" || vEl.tagName === "TEXTAREA");
+    if (isFieldInput && document.activeElement === vEl) {
+      /* do not overwrite text the user is editing */
+    } else {
+      setPanelFieldValueFromData(f, data);
+    }
+    const hasVal = isNonEmptyTrim(getPanelFieldValue(f));
     vEl.classList.toggle("missing", !hasVal);
-    vEl.textContent = hasVal ? String(data[f]) : "—";
     const ok = document.querySelector(`[data-filled-check][data-field="${f}"]`);
     if (ok) ok.style.display = hasVal ? "inline" : "none";
     const air = document.querySelector(`[data-ai-refined][data-field="${f}"]`);
@@ -296,46 +354,67 @@ function updateRowBadges(data, tab) {
   if (lineQuantityEl) {
     lineQuantityEl.disabled = loading;
   }
+  refreshAddButtonState(data, tab);
+}
+
+function refreshAddButtonState(data, tab) {
+  if (!addToList) return;
+  if (!data) {
+    addToList.disabled = true;
+    return;
+  }
+  if (data.isLoading === true) {
+    addToList.disabled = true;
+    return;
+  }
+  if (tab && (isQuartzyDomainUrl(tab.url) || !isMappableContentUrl(String(tab.url || "")))) {
+    addToList.disabled = true;
+    return;
+  }
+  addToList.disabled = !canAddToList(data);
+}
+
+function setRequestListExpanded(expanded) {
+  if (!requestListBody || !requestListToggle) return;
+  if (expanded) {
+    requestListBody.hidden = false;
+    requestListToggle.setAttribute("aria-expanded", "true");
+  } else {
+    requestListBody.hidden = true;
+    requestListToggle.setAttribute("aria-expanded", "false");
+  }
+  try {
+    localStorage.setItem(REQUEST_LIST_UI_KEY, expanded ? "1" : "0");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function getInitialRequestListExpanded() {
+  try {
+    return localStorage.getItem(REQUEST_LIST_UI_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
 }
 
 function updateStatusHeader(data, tab) {
-  if (!headerStatusText) return;
   const showSpinner = !!(data && data.isLoading === true);
-  if (headerStatusSpinner) {
-    headerStatusSpinner.classList.toggle("is-visible", showSpinner);
-  }
-  if (headerStatusLine) {
-    headerStatusLine.setAttribute("aria-busy", showSpinner ? "true" : "false");
-  }
   if (panelForm) {
     panelForm.classList.toggle("is-capturing", showSpinner);
     panelForm.setAttribute("aria-busy", showSpinner ? "true" : "false");
   }
-  if (!data) {
-    headerStatusText.textContent =
-      "Select a product website tab in this window, or focus a tab that already has a product page. Capture shows a status while the page is read.";
-    return;
-  }
-  if (tab && isQuartzyDomainUrl(tab.url)) {
-    headerStatusText.textContent =
-      "Quartzy in-app pages are not read by this panel. Open a vendor’s product page in a normal https tab, then return here.";
-    if (headerStatusSpinner) {
-      headerStatusSpinner.classList.remove("is-visible");
+  if (headerCaptureLive) {
+    if (!data) {
+      headerCaptureLive.textContent = "";
+      return;
     }
-    return;
-  }
-  if (tab && tab.url && !isMappableContentUrl(tab.url)) {
-    headerStatusText.textContent = "This tab is not a normal website page, so there is nothing to capture here.";
-    if (headerStatusSpinner) {
-      headerStatusSpinner.classList.remove("is-visible");
+    if (tab && (isQuartzyDomainUrl(tab.url) || (tab.url && !isMappableContentUrl(tab.url)))) {
+      headerCaptureLive.textContent = "";
+      return;
     }
-    return;
+    headerCaptureLive.textContent = showSpinner ? "Loading product data" : "";
   }
-  if (data.statusMessage && String(data.statusMessage).trim().length) {
-    headerStatusText.textContent = String(data.statusMessage).trim();
-    return;
-  }
-  headerStatusText.textContent = IDLE_STATUS;
 }
 
 function hasCaptureToShow(data, tab) {
@@ -372,9 +451,6 @@ function showData(data, tab) {
   dataState.style.display = "block";
   updateStatusHeader(data, tab);
   updateRowBadges(data, tab);
-  if (addToList) {
-    addToList.disabled = !canAddToList(data);
-  }
   if (activePanelView === "debug") {
     updateDebugView(data, tab);
   }
@@ -405,6 +481,25 @@ function loadForActiveTab() {
 }
 
 loadForActiveTab();
+
+FIELDS.forEach((f) => {
+  const el = valueEls[f];
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    el.addEventListener("input", function () {
+      const hasVal = isNonEmptyTrim(getPanelFieldValue(f));
+      el.classList.toggle("missing", !hasVal);
+      const ok = document.querySelector('[data-filled-check][data-field="' + f + '"]');
+      if (ok) ok.style.display = hasVal ? "inline" : "none";
+      getActiveTabKey((tabId, tab) => {
+        if (tabId == null) return;
+        chrome.storage.local.get(["data_" + tabId], (r) => {
+          const data = r["data_" + tabId];
+          refreshAddButtonState(data, tab);
+        });
+      });
+    });
+  }
+});
 
 if (tabNewRequest && tabDebug) {
   tabNewRequest.addEventListener("click", () => {
@@ -564,17 +659,16 @@ if (addToList) {
         const quantity = getQuantity();
         const item = {
           id: newRequestId(),
-          itemName: data.itemName,
-          catalogNumber: data.catalogNumber,
-          price: data.price,
-          unitSize: data.unitSize,
+          itemName: getPanelFieldValue("itemName"),
+          catalogNumber: getPanelFieldValue("catalogNumber"),
+          price: getPanelFieldValue("price"),
+          unitSize: getPanelFieldValue("unitSize"),
           url: data.url,
           vendor: data.vendor,
           quantity,
           addedAt: Date.now()
         };
         const next = list.concat([item]);
-        const count = next.length;
         chrome.storage.local.set({ [REQUEST_LIST_KEY]: next }, () => {
           if (chrome.runtime.lastError) {
             showToast("Could not save to your request list.");
@@ -582,7 +676,7 @@ if (addToList) {
           }
           renderRequestList(next);
           if (lineQuantityEl) lineQuantityEl.value = "1";
-          showToast("Added to your request list. " + count + " " + (count === 1 ? "line saved." : "lines saved."));
+          showAddSuccessPill();
         });
       });
     });
@@ -590,6 +684,20 @@ if (addToList) {
 }
 
 loadRequestList();
+
+if (requestListToggle && requestListBody) {
+  setRequestListExpanded(getInitialRequestListExpanded());
+  requestListToggle.addEventListener("click", function () {
+    const on = requestListToggle.getAttribute("aria-expanded") === "true";
+    setRequestListExpanded(!on);
+  });
+}
+
+if (cancelAddEl && lineQuantityEl) {
+  cancelAddEl.addEventListener("click", function () {
+    lineQuantityEl.value = "1";
+  });
+}
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "UPDATE_SIDE_PANEL" && message.tabId != null && message.data) {

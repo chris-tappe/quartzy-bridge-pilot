@@ -9,29 +9,42 @@
   <style>
     :root {
       --red: #ef4444;
-      --text: #111827;
+      --accent-blue: #2563eb;
+      --accent-blue-hover: #1d4ed8;
+      --text: #1f2937;
       --muted: #6b7280;
-      --border: #e5e7eb;
-      --bg: #f9fafb;
+      --border: #d1d5db;
+      --input-bg: #fff;
+      --bg: #f5f5f5;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      padding: 16px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
       font-family: "Inter", system-ui, sans-serif;
       font-size: 13px;
       color: var(--text);
       background: var(--bg);
       min-width: 300px;
     }
+    .app-scroll {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      padding: 16px 16px 0;
+    }
     .header {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 12px;
+      margin-bottom: 16px;
       padding-bottom: 12px;
       border-bottom: 1px solid var(--border);
     }
+    .header-text { flex: 1; min-width: 0; }
     .logo {
       width: 32px;
       height: 32px;
@@ -48,6 +61,21 @@
       margin: 0;
       font-size: 16px;
       font-weight: 600;
+      color: #111;
+    }
+    .mapping-block { margin-bottom: 12px; }
+    .mapping-title {
+      margin: 0 0 4px 0;
+      font-size: 15px;
+      font-weight: 700;
+      color: #111;
+    }
+    .mapping-sub {
+      margin: 0 0 12px 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      text-transform: none;
     }
     .sub {
       margin: 4px 0 0;
@@ -55,27 +83,16 @@
       color: var(--muted);
       line-height: 1.4;
     }
-    .status-line {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      min-height: 1.4em;
+    .visually-hidden {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
     }
-    .status-spinner {
-      display: none;
-      width: 14px;
-      height: 14px;
-      margin-top: 2px;
-      flex-shrink: 0;
-      border: 2px solid #e5e7eb;
-      border-top-color: #ef4444;
-      border-radius: 50%;
-      animation: qz-spin 0.7s linear infinite;
-    }
-    .status-spinner.is-visible { display: inline-block; }
-    @keyframes qz-spin { to { transform: rotate(360deg); } }
-    .status-text { flex: 1; min-width: 0; }
-    .card.is-capturing { opacity: 0.9; }
+    .card.is-capturing { opacity: 0.92; }
     .empty {
       color: var(--muted);
       font-size: 13px;
@@ -144,16 +161,32 @@
     .card {
       background: #fff;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px 14px;
+      border-radius: 8px;
+      padding: 14px 14px 12px;
+    }
+    .field-row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 10px;
+      border-bottom: 1px solid #e8e8e8;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+    }
+    .field-row-2 .row {
+      border-bottom: none;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+    @media (max-width: 340px) {
+      .field-row-2 { grid-template-columns: 1fr; }
     }
     .row {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 4px;
       margin-bottom: 10px;
       padding-bottom: 10px;
-      border-bottom: 1px solid #f3f4f6;
+      border-bottom: 1px solid #e8e8e8;
     }
     .row:last-of-type { margin-bottom: 12px; padding-bottom: 0; border-bottom: none; }
     .row-h {
@@ -163,19 +196,39 @@
       gap: 8px;
     }
     .label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      color: #374151;
+      text-transform: none;
+      letter-spacing: 0;
     }
+    .req { color: var(--red); font-weight: 600; margin-left: 1px; }
     .row-actions { display: flex; align-items: center; gap: 6px; }
-    .value {
+    .value,
+    .value-input,
+    textarea.value-input {
       font-size: 13px;
       word-break: break-word;
-      min-height: 1.25em;
+      min-height: 40px;
+      padding: 8px 10px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      line-height: 1.35;
+      width: 100%;
+      font-family: inherit;
+    }
+    textarea.value-input {
+      min-height: 64px;
+      resize: vertical;
+    }
+    .value-input::placeholder,
+    textarea.value-input::placeholder {
+      color: #9ca3af;
     }
     .value.missing { color: #9ca3af; }
+    .value-input.missing { color: var(--text); }
+    .value-input.missing:placeholder-shown { color: #9ca3af; }
     .wand {
       border: 1px solid var(--border);
       background: #fff;
@@ -204,14 +257,22 @@
       border-radius: 4px;
       padding: 1px 5px;
     }
+    .add-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 6px;
+    }
     .add-btn {
       display: block;
-      width: 100%;
-      margin-top: 4px;
+      flex: 1;
+      min-width: 0;
+      margin-top: 0;
       padding: 10px 14px;
       border: none;
-      border-radius: 8px;
-      background: var(--red);
+      border-radius: 6px;
+      background: var(--accent-blue);
       color: #fff;
       font-size: 13px;
       font-weight: 600;
@@ -219,7 +280,43 @@
       cursor: pointer;
     }
     .add-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .add-btn:hover:not(:disabled) { filter: brightness(0.95); }
+    .add-btn:hover:not(:disabled) { background: var(--accent-blue-hover); }
+    .cancel-link {
+      flex-shrink: 0;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent-blue);
+      text-decoration: none;
+      background: none;
+      border: none;
+      font-family: inherit;
+      cursor: pointer;
+      padding: 4px 0;
+    }
+    .cancel-link:hover { text-decoration: underline; }
+    .add-success-wrap {
+      margin-top: 8px;
+      min-height: 0;
+    }
+    .add-success-wrap[hidden] {
+      display: none !important;
+    }
+    .add-success-wrap:not([hidden]) {
+      display: flex;
+      justify-content: flex-start;
+    }
+    .add-success-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #166534;
+      background: #dcfce7;
+      border: 1px solid #86efac;
+      border-radius: 9999px;
+      line-height: 1.2;
+    }
     .qty-row {
       display: flex;
       align-items: center;
@@ -232,22 +329,80 @@
     .qty-row .label { margin: 0; }
     .qty-input {
       width: 80px;
-      padding: 6px 10px;
+      padding: 8px 10px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
+      background: var(--input-bg);
       font-size: 13px;
       font-family: inherit;
     }
-    .section-title {
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--muted);
-      margin: 16px 0 8px 0;
+    .section-title { display: none; }
+    .request-list-spacer { flex: 0 0 auto; height: 8px; }
+    .request-list-section {
+      flex: 0 0 auto;
+      width: 100%;
     }
+    .request-list-bar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      margin-top: auto;
+      padding: 10px 14px;
+      background: #efefef;
+      border-top: 1px solid #d1d1d1;
+    }
+    .request-list-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      gap: 8px;
+      background: none;
+      border: none;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      color: #1f2937;
+      cursor: pointer;
+      padding: 0;
+    }
+    .request-list-toggle .request-list-labelwrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .request-list-type-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      background: #fee2e2;
+      color: var(--red);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .request-list-chevron {
+      display: inline-block;
+      font-size: 10px;
+      line-height: 1;
+      color: #6b7280;
+      transition: transform 0.15s ease;
+    }
+    .request-list-toggle[aria-expanded="true"] .request-list-chevron {
+      transform: rotate(180deg);
+    }
+    .request-list-body {
+      padding: 0 16px 12px;
+      background: var(--bg);
+    }
+    .request-list-body[hidden] { display: none !important; }
     .request-list {
-      max-height: 200px;
+      max-height: 220px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -309,18 +464,17 @@
   </style>
 </head>
 <body>
+  <div class="app-scroll" id="appMainScroll">
   <div class="header">
     <div class="logo" aria-hidden="true">Q</div>
-    <div>
+    <div class="header-text">
       <h1>Quartzy Connect</h1>
-      <p class="sub status-line" id="headerStatusLine" aria-live="polite" aria-atomic="true">
-        <span class="status-spinner" id="headerStatusSpinner" role="status" aria-label="Loading"></span>
-        <span class="status-text" id="headerStatusText">Select a product website tab, then wait while we read the page. Use the wands to map a field if capture finishes and something is still missing.</span>
-      </p>
     </div>
   </div>
 
-  <p class="empty" id="emptyState">Select a website tab in this window. When a page loads, its capture will appear here.</p>
+  <p class="visually-hidden" id="headerCaptureLive" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <p class="empty" id="emptyState">Select a website tab in this window. When a product page loads, its capture will appear here.</p>
 
   <div class="new-request" id="dataState" style="display: none;">
     <div class="view-tabs" role="tablist" aria-label="Panel view">
@@ -329,55 +483,100 @@
     </div>
     <div class="view-panel" id="viewRequest" role="tabpanel" aria-labelledby="tabNewRequest">
     <div class="card" id="panelForm" aria-busy="false">
+      <div class="mapping-block">
+        <h2 class="mapping-title" id="mappingItemTitle">Mapping item</h2>
+        <p class="mapping-sub" id="mappingItemSub">Map fields from the vendor page to build your request</p>
+      </div>
       <div class="row" data-input-row="itemName">
         <div class="row-h">
-          <span class="label">Item name</span>
+          <span class="label">Item name<span class="req" title="Required">*</span></span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="itemName" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="itemName" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="itemName" title="Select text on the product page" aria-label="Map item name from page">🪄</button>
           </div>
         </div>
-        <div class="value" id="vItemName" data-value-for="itemName">—</div>
+        <textarea
+          class="value value-input"
+          id="vItemName"
+          data-value-for="itemName"
+          rows="2"
+          spellcheck="true"
+          autocomplete="off"
+          aria-label="Item name"
+          placeholder="—"
+        ></textarea>
       </div>
+      <div class="field-row-2">
       <div class="row" data-input-row="catalogNumber">
         <div class="row-h">
-          <span class="label">Catalog #</span>
+          <span class="label">Catalog #<span class="req" title="Required">*</span></span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="catalogNumber" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="catalogNumber" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="catalogNumber" title="Select text on the product page" aria-label="Map catalog from page">🪄</button>
           </div>
         </div>
-        <div class="value" id="vCatalog" data-value-for="catalogNumber">—</div>
+        <input
+          type="text"
+          class="value value-input"
+          id="vCatalog"
+          data-value-for="catalogNumber"
+          autocomplete="off"
+          aria-label="Catalog number"
+          placeholder="—"
+        />
       </div>
       <div class="row" data-input-row="price">
         <div class="row-h">
-          <span class="label">Price</span>
+          <span class="label">Price<span class="req" title="Required">*</span></span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="price" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="price" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="price" title="Select text on the product page" aria-label="Map price from page">🪄</button>
           </div>
         </div>
-        <div class="value" id="vPrice" data-value-for="price">—</div>
+        <input
+          type="text"
+          class="value value-input"
+          id="vPrice"
+          data-value-for="price"
+          autocomplete="off"
+          aria-label="Price"
+          placeholder="—"
+        />
+      </div>
       </div>
       <div class="row" data-input-row="unitSize">
         <div class="row-h">
-          <span class="label">Unit size</span>
+          <span class="label">Unit size<span class="req" title="Required">*</span></span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="unitSize" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="unitSize" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
             <button type="button" class="wand" data-wand="unitSize" title="Select text on the product page" aria-label="Map unit size from page">🪄</button>
           </div>
         </div>
-        <div class="value" id="vUnit" data-value-for="unitSize">—</div>
+        <input
+          type="text"
+          class="value value-input"
+          id="vUnit"
+          data-value-for="unitSize"
+          autocomplete="off"
+          aria-label="Unit size"
+          placeholder="—"
+        />
       </div>
       <div class="qty-row">
         <span class="label">Quantity</span>
         <input type="number" class="qty-input" id="lineQuantity" min="1" max="999999" value="1" inputmode="numeric" aria-label="Quantity for this line" />
       </div>
-      <button type="button" class="add-btn" id="addToList" disabled>Add to request list</button>
+      <div class="add-row">
+        <button type="button" class="add-btn" id="addToList" disabled>Add item</button>
+        <button type="button" class="cancel-link" id="cancelAdd" aria-label="Reset quantity to 1">Cancel</button>
+      </div>
+      <div class="add-success-wrap" id="addSuccessWrap" hidden>
+        <span class="add-success-pill" id="addSuccessPill" role="status" aria-live="polite">Added to list</span>
+      </div>
     </div>
     </div>
     <div class="view-panel" id="viewDebug" role="tabpanel" aria-labelledby="tabDebug" hidden>
@@ -387,10 +586,25 @@
       </div>
     </div>
   </div>
+  <div class="request-list-spacer" aria-hidden="true"></div>
+  </div>
 
-  <h2 class="section-title" id="requestListHeading">Request list</h2>
-  <p class="request-empty" id="requestListEmpty">No items saved yet.</p>
-  <div class="request-list" id="requestList" style="display: none;" aria-live="polite"></div>
+  <div class="request-list-section">
+    <div class="request-list-bar">
+      <button type="button" class="request-list-toggle" id="requestListToggle" aria-expanded="false" aria-controls="requestListBody">
+        <span class="request-list-labelwrap">
+          <span class="request-list-type-icon" aria-hidden="true">R</span>
+          <span>Request list</span>
+        </span>
+        <span class="request-list-chevron" aria-hidden="true">▲</span>
+      </button>
+    </div>
+    <div class="request-list-body" id="requestListBody" hidden>
+      <p class="request-empty" id="requestListEmpty">No items saved yet.</p>
+      <div class="request-list" id="requestList" style="display: none;" aria-live="polite"></div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="sidepanel.js"></script>
 </body>

@@ -1,5 +1,6 @@
 /**
  * On-device (Prompt API) or proxy-backed (Gemini 3 / backend) product field extraction.
+ * content.js only calls this when `USE_AI_EXTRACTION` is true; otherwise the module is unused but kept.
  */
 (function (global) {
   "use strict";
