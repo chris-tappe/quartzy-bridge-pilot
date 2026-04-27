@@ -19,6 +19,15 @@ let exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSiz
 let lastHeuristicProvenance = { itemName: "—", catalogNumber: "—", price: "—", unitSize: "—" };
 const WAND_FIELD_SET = { itemName: 1, catalogNumber: 1, price: 1, unitSize: 1 };
 
+/**
+ * Last good {@link extractFromTableRow} result. Re-applied at the end of {@link doCaptureRun} so a
+ * debounced JSON-LD pass does not overwrite row-driven price / unit (e.g. 25ul vs 0.1 ml option rows)
+ * with global heuristics like a single page-wide "1 ml".
+ * Cleared in {@link resetCaptureState} (e.g. navigation).
+ * @type {{ itemName: string, catalogNumber: string, price: string, unitSize: string }|null}
+ */
+let lastTableRowExtract = null;
+
 const RERUN_DEBOUNCE_MS = 400;
 let captureRerunDebounceT = null;
 /**
@@ -273,6 +282,7 @@ function resetCaptureState() {
     userTouched[k] = false;
     userValues[k] = "";
   });
+  lastTableRowExtract = null;
   captureAutomated = { itemName: "", catalogNumber: "", price: "", unitSize: "" };
   exFieldSources = { itemName: null, catalogNumber: null, price: null, unitSize: null };
   exAiRefined = { itemName: false, catalogNumber: false, price: false, unitSize: false };
@@ -740,6 +750,10 @@ function classifyTableHeaderText(h) {
   if (/\b(size|uom|pack(?!ing)|format|content|container|unit size|volume|amount)\b/i.test(s)) {
     return "size";
   }
+  /* e.g. "Case Qty", "Pack/Case" — keep explicit; a lone "Pack" header must not become a "size" column. */
+  if (/\bcase\s*qty|case\s*quant|cs\s*qty|pack\/\s*case|pack\s*size|units?\s*per(?:\s*case|\/pack)?|inner(?:\s*|\/)case|outer(?:\s*|\/)pack/i.test(s) && !/name|title|description|add\s*to/i.test(s)) {
+    return "size";
+  }
   if (/\b(product|name|item|description|title)\b/i.test(s) && !/shelf|haz/i.test(s)) {
     return "product";
   }
@@ -840,11 +854,13 @@ function extractFromTableRow(tr) {
     if (p) {
       out.price = normalizePriceForPanel(p[0]);
     }
-    const sizeLike = full.match(
-      /(?:\d+|\d+\s*\/\s*\d+)\s*(?:mL|L|G|g|ug|μg|mg|tests?)\b|Case of \d+[^.\n]{0,22}|^Each$|\d+\s*x\s*\d+|\b\d+[\s\u00A0]*L\b|Cubitainer|bottle|vial|tests?\b/i
-    );
-    if (sizeLike) {
-      out.unitSize = sizeLike[0].replace(/\s+/g, " ").trim();
+    if (!isNonEmptyTrim(out.unitSize)) {
+      const sizeLike = full.match(
+        /(?:\d+|\d+\s*\/\s*\d+)\s*(?:mL|L|G|g|ug|μg|mg|tests?)\b|Case of \d+[^.\n]{0,22}|^Each$|\d+\s*x\s*\d+|\b\d+[\s\u00A0]*L\b|Cubitainer|bottle|vial|tests?\b/i
+      );
+      if (sizeLike) {
+        out.unitSize = sizeLike[0].replace(/\s+/g, " ").trim();
+      }
     }
     const numWords = full.split(/[\s\n,|]+/).filter(function (w) { return w.length; });
     for (let w = 0; w < Math.min(numWords.length, 4); w++) {
@@ -913,6 +929,13 @@ function extractFromTableRow(tr) {
   if (isNonEmptyTrim(out.price) && !/[\$€£]/.test(String(out.price))) {
     out.price = normalizePriceForPanel(out.price);
   }
+  const atcSizeEl = tr.querySelector && tr.querySelector(".atc_size, [class*='atc_size']");
+  if (atcSizeEl) {
+    const tAtc = (atcSizeEl.textContent || "").replace(/\s+/g, " ").trim();
+    if (isNonEmptyTrim(tAtc) && tAtc.length < 200) {
+      out.unitSize = tAtc;
+    }
+  }
   return out;
 }
 
@@ -929,7 +952,8 @@ function tableRowExtractionIsUseful(partial) {
 }
 
 /**
- * Merges a clicked table row into the live capture. Clears per-field session wand for overridden keys.
+ * Merges a clicked table row into the live capture. Clears per-field session wand for overridden keys
+ * (unless the user has already set that field with the magic wand in this session — then keep the wand).
  * @param {object} partial
  */
 function applyTableRowVariantToCapture(partial) {
@@ -938,16 +962,20 @@ function applyTableRowVariantToCapture(partial) {
   const ar = { ...exAiRefined };
   const keys = ["itemName", "catalogNumber", "price", "unitSize"];
   keys.forEach((k) => {
-    if (isNonEmptyTrim(partial[k])) {
-      m[k] = k === "price" ? normalizePriceForPanel(partial[k]) : String(partial[k]).trim();
-      if (k === "price" && !isNonEmptyTrim(m[k])) {
-        m[k] = String(partial[k]).trim();
-      }
-      src[k] = "table-row";
-      ar[k] = false;
-      userTouched[k] = false;
-      userValues[k] = "";
+    if (!isNonEmptyTrim(partial[k])) {
+      return;
     }
+    if (userTouched[k] && isNonEmptyTrim(userValues[k])) {
+      return; /* e.g. unit from description vs Case Qty: don’t clobber a wand on re-clicking the same row */
+    }
+    m[k] = k === "price" ? normalizePriceForPanel(partial[k]) : String(partial[k]).trim();
+    if (k === "price" && !isNonEmptyTrim(m[k])) {
+      m[k] = String(partial[k]).trim();
+    }
+    src[k] = "table-row";
+    ar[k] = false;
+    userTouched[k] = false;
+    userValues[k] = "";
   });
   exFieldSources = src;
   exAiRefined = ar;
@@ -981,6 +1009,12 @@ function tryApplyTableRowAsVariant(tr, target) {
   if (!tableRowExtractionIsUseful(partial)) {
     return false;
   }
+  lastTableRowExtract = {
+    itemName: partial.itemName || "",
+    catalogNumber: partial.catalogNumber || "",
+    price: partial.price || "",
+    unitSize: partial.unitSize || ""
+  };
   applyTableRowVariantToCapture(partial);
   return true;
 }
@@ -1005,6 +1039,44 @@ function mergeSelectedRadioVariantInto(merged, fieldSources, aiR) {
     fieldSources.unitSize = "variant-dom";
     if (aiR) aiR.unitSize = false;
   }
+}
+
+/**
+ * After JSON-LD / wands / Fisher radio, restore the most recently clicked product-table row
+ * so a debounced scrape does not replace row-specific price/unit with a global heuristic.
+ * @param {object} merged
+ * @param {object} fieldSources
+ * @param {object|null} aiR
+ */
+function applyLastTableRowExtractToMerge(merged, fieldSources, aiR) {
+  if (!lastTableRowExtract) {
+    return;
+  }
+  const varU = scrapeSelectedRadioGroupVariant();
+  const keys = ["itemName", "catalogNumber", "price", "unitSize"];
+  keys.forEach(function (k) {
+    if (userTouched[k] && isNonEmptyTrim(userValues[k])) {
+      return;
+    }
+    const raw = lastTableRowExtract[k];
+    if (!isNonEmptyTrim(raw)) {
+      return;
+    }
+    if (k === "unitSize" && varU && isNonEmptyTrim(varU.unitSize)) {
+      return; /* UOM / Fisher radio for price box */
+    }
+    if (k === "price" && varU && isNonEmptyTrim(varU.price)) {
+      return;
+    }
+    merged[k] = k === "price" ? normalizePriceForPanel(raw) : String(raw).trim();
+    if (k === "price" && !isNonEmptyTrim(merged[k])) {
+      merged[k] = String(raw).trim();
+    }
+    fieldSources[k] = "table-row";
+    if (aiR) {
+      aiR[k] = false;
+    }
+  });
 }
 
 let qzRunChain = Promise.resolve();
@@ -1077,6 +1149,7 @@ async function doCaptureRun() {
       });
     }
     mergeSelectedRadioVariantInto(merged, fieldSources, aiR);
+    applyLastTableRowExtractToMerge(merged, fieldSources, aiR);
     applyAndBroadcastProduct(merged, fieldSources, aiR);
   } catch (err) {
     console.warn("[Quartzy Bridge] Extraction on page failed:", err && err.message);
