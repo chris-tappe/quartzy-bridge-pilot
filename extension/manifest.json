@@ -1,7 +1,7 @@
 {
   "manifest_version": 4,
   "name": "Quartzy Connect",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Capture product data (JSON-LD or highlight mapping) in the side panel and build a request list.",
   "permissions": [
     "sidePanel",
