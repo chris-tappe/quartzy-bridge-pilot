@@ -374,8 +374,11 @@ function startWandForField(key) {
   if (typeof QuartzySelectionMode === "undefined" || !QuartzySelectionMode.start) {
     return false;
   }
+  /* Allow re-arming for a different field (e.g. Mapping Mode advancing through fields). */
   if (typeof QuartzySelectionMode.isActive === "function" && QuartzySelectionMode.isActive()) {
-    return false;
+    if (typeof QuartzySelectionMode.stop === "function") {
+      QuartzySelectionMode.stop();
+    }
   }
   QuartzySelectionMode.start(key, {
     onCapture: (text, range) => {
@@ -397,9 +400,26 @@ function startWandForField(key) {
       exAiRefined[key] = false;
       captureAutomated = { ...captureAutomated, [key]: v };
       broadcastCurrentCapture();
+      try {
+        chrome.runtime.sendMessage({ type: "WAND_CAPTURED", field: key, value: v });
+      } catch (e) {
+        /* side panel may be closed; non-fatal */
+      }
     }
   });
   return true;
+}
+
+function stopActiveWand() {
+  if (typeof QuartzySelectionMode === "undefined") return false;
+  if (typeof QuartzySelectionMode.isActive === "function" && !QuartzySelectionMode.isActive()) {
+    return false;
+  }
+  if (typeof QuartzySelectionMode.stop === "function") {
+    QuartzySelectionMode.stop();
+    return true;
+  }
+  return false;
 }
 
 function emitBlankCapture() {
@@ -1167,6 +1187,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "WAND_START" && message.field) {
     const started = startWandForField(String(message.field));
     sendResponse({ success: started });
+    return;
+  }
+
+  if (message.type === "WAND_STOP") {
+    const stopped = stopActiveWand();
+    sendResponse({ success: stopped });
     return;
   }
 });

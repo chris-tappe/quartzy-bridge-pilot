@@ -203,22 +203,106 @@
     .value.missing { color: #9ca3af; }
     .value-input.missing { color: var(--text); }
     .value-input.missing:placeholder-shown { color: #9ca3af; }
-    .wand {
-      border: 1px solid var(--border);
-      background: #fff;
-      border-radius: 8px;
-      width: 32px;
-      height: 32px;
+    .mapping-mode-bar {
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 0 0 12px 0;
+      padding: 10px 12px;
+      background: #fef3ec;
+      border: 1px solid #fbd5c0;
+      border-radius: 8px;
+    }
+    .mapping-mode-bar.is-on {
+      background: #fde7da;
+      border-color: var(--quartzy-orange);
+    }
+    .toggle-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
       cursor: pointer;
-      font-size: 16px;
-      line-height: 1;
+      user-select: none;
+      font-size: 13px;
+      font-weight: 600;
+      color: #374151;
+    }
+    .toggle-switch input {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .toggle-slider {
+      position: relative;
+      display: inline-block;
+      width: 32px;
+      height: 18px;
+      background: #d1d5db;
+      border-radius: 9999px;
+      transition: background 0.15s ease;
       flex-shrink: 0;
     }
-    .wand:hover { background: #f9fafb; border-color: #d1d5db; }
-    .wand:disabled { opacity: 0.45; cursor: not-allowed; }
+    .toggle-slider::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+      transition: transform 0.15s ease;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--quartzy-orange);
+    }
+    .toggle-switch input:checked + .toggle-slider::after {
+      transform: translateX(14px);
+    }
+    .toggle-switch input:focus-visible + .toggle-slider {
+      outline: 2px solid var(--quartzy-orange);
+      outline-offset: 2px;
+    }
+    .toggle-switch input:disabled + .toggle-slider {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .mapping-mode-hint {
+      flex: 1 1 100%;
+      font-size: 11px;
+      color: #92400e;
+      line-height: 1.4;
+      margin: 0;
+    }
+    .mapping-mode-hint[hidden] { display: none !important; }
+    .row.is-mapping-target {
+      cursor: pointer;
+    }
+    .row.is-mapping-target .label {
+      color: var(--quartzy-orange);
+      font-weight: 600;
+    }
+    .row.is-mapping-target .value-input {
+      border-color: var(--quartzy-orange);
+      box-shadow: 0 0 0 3px rgba(247, 94, 45, 0.18);
+      animation: mapping-target-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes mapping-target-pulse {
+      0%, 100% { box-shadow: 0 0 0 3px rgba(247, 94, 45, 0.18); }
+      50% { box-shadow: 0 0 0 5px rgba(247, 94, 45, 0.32); }
+    }
+    body.mapping-mode-on .row:not(.is-mapping-target) {
+      cursor: pointer;
+    }
+    body.mapping-mode-on .row:not(.is-mapping-target):hover .label {
+      color: var(--quartzy-orange);
+    }
     .badge-ok { color: #10b981; font-size: 12px; font-weight: 600; }
     .badge-ai {
       font-size: 9px;
@@ -455,13 +539,22 @@
         <h2 class="mapping-title" id="mappingItemTitle">Mapping item</h2>
         <p class="mapping-sub" id="mappingItemSub">Map fields from the vendor page to build your request</p>
       </div>
+      <div class="mapping-mode-bar" id="mappingModeBar">
+        <label class="toggle-switch" for="mappingModeToggle">
+          <input type="checkbox" id="mappingModeToggle" aria-describedby="mappingModeHint" />
+          <span class="toggle-slider" aria-hidden="true"></span>
+          <span class="toggle-text">Mapping mode</span>
+        </label>
+        <p class="mapping-mode-hint" id="mappingModeHint" hidden>
+          Drag-select text on the page to fill the highlighted field. Click another field to focus it instead.
+        </p>
+      </div>
       <div class="row" data-input-row="itemName">
         <div class="row-h">
           <span class="label">Item name<span class="req" title="Required">*</span></span>
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="itemName" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="itemName" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
-            <button type="button" class="wand" data-wand="itemName" title="Select text on the product page" aria-label="Map item name from page">🪄</button>
           </div>
         </div>
         <textarea
@@ -482,7 +575,6 @@
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="catalogNumber" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="catalogNumber" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
-            <button type="button" class="wand" data-wand="catalogNumber" title="Select text on the product page" aria-label="Map catalog from page">🪄</button>
           </div>
         </div>
         <input
@@ -501,7 +593,6 @@
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="price" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="price" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
-            <button type="button" class="wand" data-wand="price" title="Select text on the product page" aria-label="Map price from page">🪄</button>
           </div>
         </div>
         <input
@@ -521,7 +612,6 @@
           <div class="row-actions">
             <span class="badge-ok" data-filled-check data-field="unitSize" style="display: none">✓</span>
             <span class="badge-ai" data-ai-refined data-field="unitSize" style="display: none" title="Filled from on-page AI fallback" aria-label="AI refined">AI</span>
-            <button type="button" class="wand" data-wand="unitSize" title="Select text on the product page" aria-label="Map unit size from page">🪄</button>
           </div>
         </div>
         <input

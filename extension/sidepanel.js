@@ -25,6 +25,15 @@ const valueEls = {
   unitSize: document.getElementById("vUnit")
 };
 
+const FIELD_ORDER = FIELDS.slice();
+const mappingModeBar = document.getElementById("mappingModeBar");
+const mappingModeToggle = document.getElementById("mappingModeToggle");
+const mappingModeHint = document.getElementById("mappingModeHint");
+
+let mappingMode = false;
+let mappingField = null;
+let mappingTabId = null;
+
 const panelForm = document.getElementById("panelForm");
 const viewRequest = document.getElementById("viewRequest");
 const viewDebug = document.getElementById("viewDebug");
@@ -357,11 +366,12 @@ function isWandContextOk(data, tab) {
 
 function updateRowBadges(data, tab) {
   const loading = data && data.isLoading === true;
+  const sidePanelHasFocus = typeof document.hasFocus === "function" ? document.hasFocus() : true;
   FIELDS.forEach((f) => {
     const vEl = valueEls[f];
     const isFieldInput = vEl && (vEl.tagName === "INPUT" || vEl.tagName === "TEXTAREA");
-    if (isFieldInput && document.activeElement === vEl) {
-      /* do not overwrite text the user is editing */
+    if (isFieldInput && sidePanelHasFocus && document.activeElement === vEl) {
+      /* user is currently typing here; don't overwrite */
     } else {
       setPanelFieldValueFromData(f, data);
     }
@@ -375,11 +385,13 @@ function updateRowBadges(data, tab) {
       air.style.display = hasVal && ar ? "inline" : "none";
     }
   });
-  const wandsOn = isWandContextOk(data, tab) && !loading;
-  FIELDS.forEach((field) => {
-    const w = document.querySelector(`[data-wand="${field}"]`);
-    if (w) w.disabled = !wandsOn;
-  });
+  const mappingOk = isWandContextOk(data, tab) && !loading;
+  if (mappingModeToggle) {
+    mappingModeToggle.disabled = !mappingOk;
+  }
+  if (!mappingOk && mappingMode) {
+    setMappingMode(false);
+  }
   if (lineQuantityEl) {
     lineQuantityEl.disabled = loading;
   }
@@ -539,34 +551,130 @@ if (tabNewRequest && tabDebug) {
   });
 }
 
-function sendWand(field) {
-  getActiveTabKey((tabId, tab) => {
-    if (tabId == null) {
-      showToast("No active tab to map.");
-      return;
-    }
-    if (!isMappableContentUrl(tab && tab.url)) {
-      showToast("Open a product page in this window (a normal website tab).");
-      return;
-    }
-    chrome.tabs.sendMessage(tabId, { type: "WAND_START", field: field }, (response) => {
-      if (chrome.runtime.lastError) {
-        showToast("Map from page: reload the product page or try again.");
-        return;
-      }
-      if (!response || !response.success) {
-        showToast("Selection is already in progress, or the page is not ready.");
-        return;
-      }
-      showToast("Select the text for this field on the page, then release.");
-    });
+function clearMappingFieldHighlight() {
+  document.querySelectorAll("[data-input-row].is-mapping-target").forEach((r) => {
+    r.classList.remove("is-mapping-target");
   });
 }
 
-document.querySelectorAll("[data-wand]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const field = btn.getAttribute("data-wand");
-    if (field) sendWand(field);
+function highlightMappingField(field) {
+  clearMappingFieldHighlight();
+  const row = document.querySelector('[data-input-row="' + field + '"]');
+  if (row) row.classList.add("is-mapping-target");
+}
+
+function setMappingField(field) {
+  if (!mappingMode) return;
+  if (mappingTabId == null) return;
+  if (!field || FIELD_ORDER.indexOf(field) < 0) return;
+  if (mappingField === field) {
+    highlightMappingField(field);
+    return;
+  }
+  mappingField = field;
+  highlightMappingField(field);
+  const inp = valueEls[field];
+  if (inp && typeof inp.focus === "function") {
+    try {
+      inp.focus({ preventScroll: false });
+    } catch (e) {
+      try { inp.focus(); } catch (e2) { /* ignore */ }
+    }
+  }
+  chrome.tabs.sendMessage(mappingTabId, { type: "WAND_START", field: field }, (response) => {
+    if (chrome.runtime.lastError) {
+      showToast("Map from page: reload the product page or try again.");
+      setMappingMode(false);
+      return;
+    }
+    if (!response || !response.success) {
+      showToast("Could not arm the wand on this page. Try reloading.");
+      setMappingMode(false);
+    }
+  });
+}
+
+function setMappingMode(on) {
+  if (on === mappingMode) {
+    if (mappingModeToggle) mappingModeToggle.checked = on;
+    return;
+  }
+  if (on) {
+    getActiveTabKey((tabId, tab) => {
+      if (tabId == null || !isMappableContentUrl((tab && tab.url) || "")) {
+        showToast("Open a normal product page to start mapping.");
+        if (mappingModeToggle) mappingModeToggle.checked = false;
+        return;
+      }
+      mappingMode = true;
+      mappingTabId = tabId;
+      if (mappingModeBar) mappingModeBar.classList.add("is-on");
+      if (mappingModeHint) mappingModeHint.hidden = false;
+      if (mappingModeToggle) mappingModeToggle.checked = true;
+      document.body.classList.add("mapping-mode-on");
+      if (activePanelView !== "request") setPanelView("request");
+      mappingField = null;
+      setMappingField("itemName");
+    });
+    return;
+  }
+  const prevTab = mappingTabId;
+  mappingMode = false;
+  mappingField = null;
+  mappingTabId = null;
+  if (mappingModeBar) mappingModeBar.classList.remove("is-on");
+  if (mappingModeHint) mappingModeHint.hidden = true;
+  if (mappingModeToggle) mappingModeToggle.checked = false;
+  document.body.classList.remove("mapping-mode-on");
+  clearMappingFieldHighlight();
+  if (prevTab != null) {
+    try {
+      chrome.tabs.sendMessage(prevTab, { type: "WAND_STOP" }, () => {
+        if (chrome.runtime.lastError) {
+          /* tab gone or content script reloaded; safe to ignore */
+        }
+      });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
+function advanceMappingField() {
+  const idx = FIELD_ORDER.indexOf(mappingField);
+  if (idx < 0 || idx >= FIELD_ORDER.length - 1) {
+    setMappingMode(false);
+    showToast("All fields mapped. Add to list when ready.");
+    return;
+  }
+  setMappingField(FIELD_ORDER[idx + 1]);
+}
+
+if (mappingModeToggle) {
+  mappingModeToggle.addEventListener("change", () => {
+    setMappingMode(!!mappingModeToggle.checked);
+  });
+}
+
+FIELDS.forEach((f) => {
+  const el = valueEls[f];
+  if (!el) return;
+  el.addEventListener("focus", () => {
+    if (mappingMode && mappingField !== f) {
+      setMappingField(f);
+    }
+  });
+});
+
+document.querySelectorAll("[data-input-row]").forEach((row) => {
+  row.addEventListener("click", (e) => {
+    if (!mappingMode) return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    const f = row.getAttribute("data-input-row");
+    if (f && f !== mappingField) {
+      setMappingField(f);
+    }
   });
 });
 
@@ -736,13 +844,22 @@ chrome.runtime.onMessage.addListener((message) => {
       }
     });
   }
+  if (message.type === "WAND_CAPTURED" && mappingMode && message.field === mappingField) {
+    advanceMappingField();
+  }
 });
 
-chrome.tabs.onActivated.addListener(() => {
+chrome.tabs.onActivated.addListener((info) => {
+  if (mappingMode && info && info.tabId !== mappingTabId) {
+    setMappingMode(false);
+  }
   loadForActiveTab();
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (mappingMode && tabId === mappingTabId && (changeInfo.status === "loading" || changeInfo.url)) {
+    setMappingMode(false);
+  }
   if (changeInfo.status === "complete") {
     getActiveTabKey((activeId) => {
       if (activeId === tabId) loadForActiveTab();
