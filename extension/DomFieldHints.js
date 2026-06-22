@@ -86,6 +86,18 @@
   function anchorElementFromRange(range) {
     if (!range) return null;
     try {
+      const selText = normalizeWandText(range.toString());
+      if (selText) {
+        let start = range.startContainer;
+        if (start && start.nodeType === 3) start = start.parentElement;
+        let node = start;
+        while (node && node.nodeType === 1) {
+          const t = normalizeWandText(node.innerText != null ? node.innerText : node.textContent || "");
+          if (t === selText) return node;
+          if (node === document.body) break;
+          node = node.parentElement;
+        }
+      }
       let n = range.commonAncestorContainer;
       if (n && n.nodeType === 3) {
         n = n.parentElement;
@@ -159,6 +171,236 @@
     return { start: start, end: start + n.length };
   }
 
+  function isAttributeButtonGroup(group) {
+    if (!group || !group.querySelectorAll) return false;
+    return group.querySelectorAll(".attributeButton").length >= 2;
+  }
+
+  function findAttributeButtonGroup(el) {
+    if (!el || el.nodeType !== 1) return null;
+    const btn = el.closest(".attributeButton");
+    if (!btn || !btn.parentElement) return null;
+    const group = btn.parentElement;
+    return isAttributeButtonGroup(group) ? group : null;
+  }
+
+  function findVariantPickerGroup(el) {
+    if (!el || el.nodeType !== 1) return null;
+    const attrGroup = findAttributeButtonGroup(el);
+    if (attrGroup) return attrGroup;
+    const group = el.closest(
+      "variant-picker fieldset, fieldset.option-selector, fieldset[data-selector-type], " +
+        "[role=radiogroup], .swatch-attribute, .swatch-attribute-options, .configurable-swatch-list"
+    );
+    if (!group) return null;
+    const radios = group.querySelectorAll('input[type="radio"]');
+    if (radios && radios.length >= 2) return group;
+    const select = group.querySelector("select");
+    if (select && select.options && select.options.length >= 3) return group;
+    return null;
+  }
+
+  function isAttributeButtonElement(el, group) {
+    if (!el || !group) return false;
+    const btn = el.closest(".attributeButton");
+    return !!(btn && group.contains(btn));
+  }
+
+  function readSelectedAttributeButtonText(groupEl) {
+    if (!groupEl || !groupEl.querySelector) return "";
+    const selected = groupEl.querySelector(".attributeButton.selected");
+    if (!selected) return "";
+    return normalizeWandText(selected.innerText != null ? selected.innerText : selected.textContent || "");
+  }
+
+  function isSwatchOptionElement(el, group) {
+    if (!el || !group) return false;
+    const label = el.closest("label.radio_swatch, label.swatch-option, label.swatch__option, .swatch-option");
+    return !!(label && group.contains(label));
+  }
+
+  function cleanConfigurableOptionText(raw) {
+    let t = normalizeWandText(raw);
+    if (!t) return "";
+    t = t.replace(/\s*:\s*\([^)]*\)\s*$/i, "").trim();
+    if (/^choose an option/i.test(t)) return "";
+    return t;
+  }
+
+  function readSelectedVariantFromSelect(groupEl) {
+    if (!groupEl || !groupEl.querySelector) return "";
+    const select = groupEl.querySelector(
+      "select.super-attribute-select, select[data-selector], select[name^='super_attribute']"
+    );
+    if (!select || select.selectedIndex < 1) return "";
+    const opt = select.options[select.selectedIndex];
+    if (!opt) return "";
+    return cleanConfigurableOptionText(opt.text || opt.textContent || "");
+  }
+
+  function isVariantOptionLabel(el, group) {
+    if (!el || !group) return false;
+    if (isSwatchOptionElement(el, group)) return true;
+    const label = el.closest("label");
+    if (!label || !group.contains(label)) return false;
+    const forId = label.getAttribute("for");
+    if (forId) {
+      const input = document.getElementById(forId);
+      if (input && (input.type || "").toLowerCase() === "radio" && group.contains(input)) {
+        return true;
+      }
+    }
+    const innerRadio = label.querySelector('input[type="radio"]');
+    return !!(innerRadio && group.contains(innerRadio));
+  }
+
+  function inferChildSelectorForVariant(el, field) {
+    if (el.classList && el.classList.contains("opt-value")) return ".opt-value";
+    if (el.closest && el.closest(".opt-value, [class*='opt-value']")) {
+      return ".opt-value, [class*='opt-value']";
+    }
+    if (el.classList && el.classList.contains("label")) return "span.label, .label";
+    if (el.closest && el.closest("label.radio_swatch, label.swatch-option, .swatch-option")) {
+      return "span.label, .label";
+    }
+    if (field === "unitSize") {
+      return ".opt-value, [class*='opt-value'], span.label, .label, [class*='pack-size'], [class*='unit-size']";
+    }
+    if (field === "price") {
+      return ".opt-price, [class*='opt-price'], [class*='price']";
+    }
+    return null;
+  }
+
+  function getSelectedVariantLabel(groupEl) {
+    if (!groupEl || !groupEl.querySelector) return null;
+    const checked = groupEl.querySelector('input[type="radio"]:checked');
+    if (!checked) return null;
+    if (checked.labels && checked.labels.length) return checked.labels[0];
+    if (checked.id) {
+      try {
+        return groupEl.querySelector('label[for="' + CSS.escape(checked.id) + '"]');
+      } catch (e) {
+        return groupEl.querySelector('label[for="' + checked.id + '"]');
+      }
+    }
+    return checked.closest("label");
+  }
+
+  function readSelectedVariantText(groupEl, extract) {
+    const ex = extract || {};
+    if (isAttributeButtonGroup(groupEl)) {
+      if (ex.inputSelector) {
+        try {
+          const sel = groupEl.querySelector(ex.inputSelector);
+          if (sel) {
+            const t = normalizeWandText(sel.innerText != null ? sel.innerText : sel.textContent || "");
+            if (isNonEmptyTrim(t)) return t;
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      const fromAttr = readSelectedAttributeButtonText(groupEl);
+      if (isNonEmptyTrim(fromAttr)) return fromAttr;
+    }
+    const label = getSelectedVariantLabel(groupEl);
+    if (label) {
+      if (ex.childSelector) {
+        const parts = String(ex.childSelector).split(",").map(function (s) { return s.trim(); });
+        for (let i = 0; i < parts.length; i++) {
+          if (!parts[i]) continue;
+          try {
+            const child = label.querySelector(parts[i]);
+            if (!child) continue;
+            const t = normalizeWandText(child.innerText != null ? child.innerText : child.textContent || "");
+            if (isNonEmptyTrim(t)) return t;
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      }
+      const fromLabel = normalizeWandText(label.innerText != null ? label.innerText : label.textContent || "");
+      if (isNonEmptyTrim(fromLabel)) return fromLabel;
+    }
+    return readSelectedVariantFromSelect(groupEl);
+  }
+
+  function buildSelectedVariantExtract(field, el, group, existingChildSel) {
+    const ex = {
+      type: "selectedVariant",
+      inputSelector: isAttributeButtonGroup(group) ? ".attributeButton.selected" : 'input[type="radio"]:checked',
+      labelMatch: "for"
+    };
+    if (isAttributeButtonGroup(group)) {
+      delete ex.labelMatch;
+      return ex;
+    }
+    const childSelector = existingChildSel || inferChildSelectorForVariant(el, field);
+    if (childSelector) ex.childSelector = childSelector;
+    return ex;
+  }
+
+  function maybeResolveVariantPickerRead(field, ent, n) {
+    if (!n) return null;
+    const group = findVariantPickerGroup(n) || (isAttributeButtonGroup(n) ? n : null);
+    if (!group) return null;
+    const ex = ent && ent.extract;
+    const useSelected =
+      (ex && ex.type === "selectedVariant") ||
+      n.tagName === "LABEL" ||
+      isVariantOptionLabel(n, group) ||
+      isSwatchOptionElement(n, group) ||
+      isAttributeButtonElement(n, group) ||
+      !!(n.closest && n.closest("span.label, .label") && isSwatchOptionElement(n, group));
+    if (!useSelected) return null;
+    let extract = ex;
+    if (!extract || extract.type !== "selectedVariant") {
+      const childFromExtract = ex && ex.type === "childSelector" ? ex.selector : null;
+      extract = buildSelectedVariantExtract(field, n, group, childFromExtract);
+    }
+    const text = readSelectedVariantText(group, extract);
+    if (!isNonEmptyTrim(text)) return null;
+    return { root: group, extract: extract, text: text };
+  }
+
+  const UNIT_SIZE_CHILD_SELECTORS = [
+    ".opt-value",
+    "[class*='opt-value']",
+    "[class*='pack-size']",
+    "[class*='unit-size']",
+    "[class*='variant-size']",
+    "[class*='size-value']"
+  ];
+
+  /**
+   * Pack-size widgets often bundle size + availability + price in one label; pull size from a child.
+   * @param {Element} el
+   * @param {string} fullNorm
+   * @returns {{ value: string, extract: object }|null}
+   */
+  function tryExtractUnitSizeFromWidget(el, fullNorm) {
+    if (!el || !isNonEmptyTrim(fullNorm)) return null;
+    for (let i = 0; i < UNIT_SIZE_CHILD_SELECTORS.length; i++) {
+      const childSel = UNIT_SIZE_CHILD_SELECTORS[i];
+      try {
+        const child = el.querySelector(childSel);
+        if (!child) continue;
+        const t = normalizeWandText(child.innerText != null ? child.innerText : child.textContent || "");
+        if (!t) continue;
+        if (fullNorm === t || fullNorm.indexOf(t) >= 0) {
+          return {
+            value: t,
+            extract: { type: "childSelector", selector: childSel, sample: t.slice(0, 200) }
+          };
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    return null;
+  }
+
   /**
    * When the user’s highlight is a prefix of the first “clause” (e.g. before a comma) in
    * a pack-size line, expand to the full clause (e.g. "Pkg" → "Pkg of 1").
@@ -211,6 +453,31 @@
     if (!el) {
       return null;
     }
+    const variantGroup = findVariantPickerGroup(el);
+    if (
+      variantGroup &&
+      (isVariantOptionLabel(el, variantGroup) || isAttributeButtonElement(el, variantGroup))
+    ) {
+      const groupSel = buildCssPath(variantGroup);
+      if (!groupSel) {
+        return null;
+      }
+      let childSel = inferChildSelectorForVariant(el, field);
+      if (field === "unitSize" && /\$/.test(normalizeWandText(el.innerText != null ? el.innerText : el.textContent || ""))) {
+        const fromWidget = tryExtractUnitSizeFromWidget(el, normalizeWandText(el.innerText != null ? el.innerText : el.textContent || ""));
+        if (fromWidget && fromWidget.extract && fromWidget.extract.selector) {
+          childSel = fromWidget.extract.selector;
+        }
+      }
+      const extract = buildSelectedVariantExtract(field, el, variantGroup, childSel);
+      const value = readSelectedVariantText(variantGroup, extract) || normalizeWandText(rawText);
+      return {
+        value: value,
+        extract: extract,
+        selector: groupSel,
+        el: variantGroup
+      };
+    }
     const sel = buildCssPath(el);
     if (!sel) {
       return null;
@@ -223,6 +490,17 @@
     }
 
     if (full === nSel) {
+      if (field === "unitSize" && /\$/.test(full)) {
+        const fromWidget = tryExtractUnitSizeFromWidget(el, full);
+        if (fromWidget) {
+          return {
+            value: fromWidget.value,
+            extract: fromWidget.extract,
+            selector: sel,
+            el: el
+          };
+        }
+      }
       return {
         value: full,
         extract: { type: "entire" },
@@ -282,7 +560,7 @@
    * @param {string} fullNorm
    * @returns {string}
    */
-  function applyExtractToReadText(field, ent, fullNorm) {
+  function applyExtractToReadText(field, ent, fullNorm, rootEl) {
     const f = fullNorm;
     const ex = ent && ent.extract;
     if (!ex || ex.type == null) {
@@ -290,6 +568,21 @@
     }
     if (ex.type === "entire") {
       return f;
+    }
+    if (ex.type === "childSelector" && ex.selector && rootEl) {
+      try {
+        const child = rootEl.querySelector(ex.selector);
+        if (child) {
+          const t = normalizeWandText(child.innerText != null ? child.innerText : child.textContent || "");
+          if (isNonEmptyTrim(t)) return t;
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    if (ex.type === "selectedVariant" && rootEl) {
+      const t = readSelectedVariantText(rootEl, ex);
+      if (isNonEmptyTrim(t)) return t;
     }
     if (ex.type === "toFirstDelimiter" && (ex.delimiter === "," || ex.delimiter === ";")) {
       const d = ex.delimiter;
@@ -341,11 +634,15 @@
     const ent = rec && rec[field];
     if (!ent || !isNonEmptyTrim(ent.selector)) return "";
     try {
-      const n = document.querySelector(ent.selector);
+      let n = document.querySelector(ent.selector);
       if (!n) return "";
+      const variantRead = maybeResolveVariantPickerRead(field, ent, n);
+      if (variantRead) {
+        return applyExtractToReadText(field, { extract: variantRead.extract }, variantRead.text, variantRead.root);
+      }
       const raw = n.innerText != null ? n.innerText : n.textContent || "";
       const fullNorm = normalizeWandText(raw);
-      return applyExtractToReadText(field, ent, fullNorm);
+      return applyExtractToReadText(field, ent, fullNorm, n);
     } catch (e) {
       return "";
     }

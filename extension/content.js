@@ -623,6 +623,35 @@ function readItempropUnitTextInScope(scope, anchorInput) {
 }
 
 /**
+ * Magento / STEMCELL-style swatches may have multiple checked super_attribute radios
+ * (e.g. Platform + Size). Prefer the option that looks like pack size / UOM.
+ * @returns {HTMLInputElement|null}
+ */
+function pickBestCheckedSwatchRadio() {
+  const all = document.querySelectorAll(
+    ".swatch-attribute input[type=radio]:checked, input[name^='super_attribute'][type=radio]:checked"
+  );
+  if (!all.length) {
+    return null;
+  }
+  if (all.length === 1) {
+    return all[0];
+  }
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
+    let label = r.labels && r.labels[0];
+    if (!label && r.id) {
+      label = document.querySelector('label[for="' + r.id + '"]');
+    }
+    const t = ((label && label.textContent) || "").toLowerCase();
+    if (/cells|\^|ml|mg|ug|μg|pack|size|each|test|\bvial\b|\bbottle\b/i.test(t)) {
+      return r;
+    }
+  }
+  return all[all.length - 1];
+}
+
+/**
  * Picks the checked UOM/variant by searching inside likely PDP **containers** first so we do
  * not return the first random :checked radio in the page (e.g. filters) when many groups exist.
  * @returns {HTMLInputElement|null}
@@ -642,12 +671,25 @@ function queryCheckedUomRadio() {
     document.getElementById("Pricing"),
     document.querySelector(".pricing_container"),
     document.querySelector(".product_add_to_cart"),
-    document.querySelector("form[action*=\"cart\"]")
+    document.querySelector("form[action*=\"cart\"]"),
+    document.querySelector("variant-picker"),
+    document.querySelector("fieldset.option-selector"),
+    document.querySelector(".product-options-wrapper"),
+    document.querySelector(".product-options-bottom")
   ];
   for (let i = 0; i < narrow.length; i++) {
     const c = strictUom(narrow[i]);
     if (c) {
       return c;
+    }
+    if (narrow[i] && narrow[i].querySelector) {
+      const shopify =
+        narrow[i].querySelector("input[type=radio].opt-btn:checked") ||
+        narrow[i].querySelector("fieldset input[type=radio]:checked") ||
+        narrow[i].querySelector("input[type=radio]:checked");
+      if (shopify) {
+        return shopify;
+      }
     }
   }
   const uls = document.querySelectorAll("ul.radio_list, ul.radio-list");
@@ -674,8 +716,12 @@ function queryCheckedUomRadio() {
     }
   }
   return (
+    pickBestCheckedSwatchRadio() ||
     document.querySelector("input.uom-input[type=radio]:checked") ||
-    document.querySelector("form[action*=\"cart\"] input[type=radio]:checked")
+    document.querySelector("form[action*=\"cart\"] input[type=radio]:checked") ||
+    document.querySelector("variant-picker input[type=radio]:checked") ||
+    document.querySelector("fieldset.option-selector input[type=radio]:checked") ||
+    document.querySelector("fieldset input[type=radio].opt-btn:checked")
   );
 }
 
@@ -684,7 +730,25 @@ function queryCheckedUomRadio() {
  * (e.g. one &lt;li&gt;) plus schema.org Offer fields when present — not the whole &lt;ul&gt;.
  * @returns {{ price?: string, unitSize?: string }|null}
  */
+function scrapeSelectedAttributeButtonVariant() {
+  const selected = document.querySelector(".attributeButton.selected");
+  if (!selected) {
+    return null;
+  }
+  const unitSize = (selected.innerText || selected.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!isNonEmptyTrim(unitSize)) {
+    return null;
+  }
+  return { price: "", unitSize: unitSize };
+}
+
 function scrapeSelectedRadioGroupVariant() {
+  const attr = scrapeSelectedAttributeButtonVariant();
+  if (attr) {
+    return attr;
+  }
   const r = queryCheckedUomRadio();
   if (!r) {
     return null;
@@ -702,6 +766,26 @@ function scrapeSelectedRadioGroupVariant() {
 
   let price = readItempropPriceInScope(scope, r);
   let unitSize = readItempropUnitTextInScope(scope, r);
+
+  if (!isNonEmptyTrim(unitSize)) {
+    const optVal = scope.querySelector(".opt-value, [class*='opt-value']");
+    if (optVal) {
+      unitSize = (optVal.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+  if (!isNonEmptyTrim(unitSize)) {
+    const swatchLbl = scope.querySelector("span.label, .label");
+    if (swatchLbl) {
+      unitSize = (swatchLbl.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+  if (!isNonEmptyTrim(unitSize) && scope.matches && scope.matches("label.radio_swatch, label.swatch-option")) {
+    unitSize = text;
+  }
 
   if (!isNonEmptyTrim(price)) {
     const s = String(text);
@@ -722,7 +806,7 @@ function scrapeSelectedRadioGroupVariant() {
   if (!isNonEmptyTrim(unitSize)) {
     const u =
       text.match(
-        /Case of \d+[\s\u00A0]+EA|Case of \d+(?:\s*EA|\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μg|mg|μL|uL)\b|(?:(?:^|[^A-Za-z]))Each\b|\/\s*Each|\/\s*Case of[^%\n]+|pack of \d+/i
+        /Case of \d+[\s\u00A0]+EA|Case of \d+(?:\s*EA|\s*each)?|(?:(?:\d+|\d+\s*\/\s*\d+))\s*tests?|\b\d+\s*x\s*10[\^⁰¹²³⁴⁵⁶⁷⁸⁹\d]+\s*cells?\b|\b\d{1,4}[\s\u00A0]+(?:mL|L|mG|G|g|ug|μg|mg|μL|uL)\b|(?:(?:^|[^A-Za-z]))Each\b|\/\s*Each|\/\s*Case of[^%\n]+|pack of \d+/i
       ) || text.match(/[A-Za-z-]{2,}[\s/]+(?:Bottle|Vial|Cubitainer|box|cs|ea)\b/i);
     if (u) {
       unitSize = u[0].replace(/\s+/g, " ").replace(/^\/\s*/, "").trim();
@@ -905,12 +989,20 @@ function extractFromTableRow(tr) {
       for (let i = 0; i < n; i++) {
         const h = headerLabels[i];
         const colKind = classifyTableHeaderText(h);
-        if (colKind === "ignore" || colKind === "quantity") {
-          continue;
-        }
         const cellText = (cells[i].innerText || cells[i].textContent || "")
           .replace(/\s+/g, " ")
           .trim();
+        if (colKind === "ignore") {
+          continue;
+        }
+        /* Fisher-style option grids label pack size as "Quantity" (e.g. "10 x 500 mL"). */
+        if (colKind === "quantity") {
+          if (/\d+\s*x\s*\d+|\b(mL|L|G|g|ug|μg|mg|μL|uL|tests?)\b/i.test(cellText)) {
+            out.unitSize = cellText;
+            got += 1;
+          }
+          continue;
+        }
         if (!isNonEmptyTrim(cellText) || (isNonEmptyTrim(cellText) && cellText.length > 500)) {
           continue;
         }
@@ -1308,7 +1400,8 @@ function onDocumentClickMaybeVariantOrOption(e) {
   if (
     t.closest(
       "tr, [role='row'], [role='radio'], [role='option'], [role='tab'], " +
-        "ul.radio_list, ul.radio-list, li.single_page_price_list"
+        "ul.radio_list, ul.radio-list, li.single_page_price_list, " +
+        "label.radio_swatch, label.swatch-option, .swatch-attribute, .swatch-option"
     )
   ) {
     scheduleCaptureRerun();

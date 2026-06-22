@@ -34,32 +34,53 @@
   }
 
   const BUTTON_LIKE_SELECTOR =
-    "label, button, [role=button], [role=option], [role=radio], [role=tab], [role=checkbox]";
+    "label, button, .attributeButton, [role=button], [role=option], [role=radio], [role=tab], [role=checkbox]";
+
+  function normalizeCapturedText(raw) {
+    return String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+  }
 
   /**
    * Fallback when drag-select produced no text — common on custom widgets like a
    * <label> wrapping a hidden <input type="radio"> with a visible <span>.
+   * Prefers the deepest clicked element (e.g. .opt-value) over the whole label.
    * Returns the text + a synthetic Range so DomFieldHints can still build a CSS path.
    * @param {EventTarget|null} target
    * @returns {{ text: string, range: Range|null }|null}
    */
   function grabFallbackFromTarget(target) {
-    if (!target || target.nodeType !== 1) return null;
+    if (!target) return null;
     let el = target;
+    if (el.nodeType === 3) el = el.parentElement;
+    if (!el || el.nodeType !== 1) return null;
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       el = (typeof el.closest === "function" && el.closest(BUTTON_LIKE_SELECTOR))
         || el.parentElement
         || el;
     }
     const buttonEl = (typeof el.closest === "function" && el.closest(BUTTON_LIKE_SELECTOR)) || null;
-    if (!buttonEl) return null;
-    const raw = buttonEl.innerText != null ? buttonEl.innerText : (buttonEl.textContent || "");
-    const txt = String(raw).replace(/\s+/g, " ").trim();
+    let pick = el;
+    if (buttonEl && buttonEl.contains(el) && el !== buttonEl) {
+      const clickedText = normalizeCapturedText(
+        el.innerText != null ? el.innerText : el.textContent
+      );
+      if (clickedText && clickedText.length <= 200) {
+        pick = el;
+      } else {
+        pick = buttonEl;
+      }
+    } else if (buttonEl) {
+      pick = buttonEl;
+    } else {
+      return null;
+    }
+    const raw = pick.innerText != null ? pick.innerText : (pick.textContent || "");
+    const txt = normalizeCapturedText(raw);
     if (!txt || txt.length > 200) return null;
     let range = null;
     try {
       range = document.createRange();
-      range.selectNodeContents(buttonEl);
+      range.selectNodeContents(pick);
     } catch (e) {
       range = null;
     }
