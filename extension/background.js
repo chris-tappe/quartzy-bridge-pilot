@@ -24,7 +24,7 @@ const AI_EXTRACT_PROXY_URL = "";
 const FETCH_PRICE_TEST_ENABLED =
   typeof QUARTZY_FETCH_PRICE_TEST_ENABLED !== "undefined" && QUARTZY_FETCH_PRICE_TEST_ENABLED === true;
 
-const FETCH_PRICE_TIMEOUT_MS = 18000;
+const FETCH_PRICE_TIMEOUT_MS = 40000;
 
 /**
  * Known session-cookie name fragments per vendor hostname (extend over time).
@@ -123,11 +123,13 @@ async function checkLoginFromCookiesDetailed(url) {
     for (let i = 0; i < list.length; i++) {
       const cn = String(list[i].name || "").toLowerCase();
       for (let j = 0; j < lowerNames.length; j++) {
-        if (
-          (cn === lowerNames[j] || cn.indexOf(lowerNames[j]) !== -1) &&
-          list[i].value != null &&
-          String(list[i].value).length > 0
-        ) {
+        const needle = lowerNames[j];
+        /* Exact match always; substring only for distinctive names (avoid "session" → Hotjar _hjSession*). */
+        const nameHit =
+          cn === needle ||
+          ((needle.length >= 8 || needle.indexOf("-") !== -1 || needle.indexOf("_") !== -1) &&
+            cn.indexOf(needle) !== -1);
+        if (nameHit && list[i].value != null && String(list[i].value).length > 0) {
           matched.push(list[i].name);
           break;
         }
@@ -430,6 +432,29 @@ async function runFetchPriceRequest(url, catalogNumber) {
 }
 
 /**
+ * @param {object|null|undefined} response
+ * @returns {boolean}
+ */
+function fetchPriceResponseHasUsablePrice(response) {
+  if (!response) {
+    return false;
+  }
+  if (response.baseline && String(response.baseline.price || "").trim()) {
+    return true;
+  }
+  const variants = response.variants;
+  if (!Array.isArray(variants)) {
+    return false;
+  }
+  for (let i = 0; i < variants.length; i++) {
+    if (variants[i] && String(variants[i].price || "").trim()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * @param {number} tabId
  */
 async function scrapeFetchPriceTab(tabId) {
@@ -472,15 +497,25 @@ async function scrapeFetchPriceTab(tabId) {
         catalogNumber: catalogNumber || ""
       });
       if (response) {
+        const hasPrice = fetchPriceResponseHasUsablePrice(response);
         bgDebug(debug, "content_response", {
           ok: response.ok,
           error: response.error || null,
           mode: response.mode,
           variantCount: Array.isArray(response.variants) ? response.variants.length : 0,
+          hasPrice: hasPrice,
           loginStateDom: response.loginState,
           pageUrl: response.pageUrl || null
         });
-        break;
+        /* Content script already waits for SPA hydration; only re-send if still empty and no blocker. */
+        if (hasPrice || response.error || attempt >= 2) {
+          break;
+        }
+        bgDebug(debug, "empty_price_bg_retry", { attempt: attempt + 1, waitMs: 1500 });
+        await new Promise(function (r) {
+          setTimeout(r, 1500);
+        });
+        continue;
       }
     } catch (e) {
       lastErr = e;
@@ -593,6 +628,421 @@ function mapFetchPriceErrorMessage(code) {
   return code ? String(code) : "";
 }
 
+const CART_CONFIGS_STORAGE_KEY = "vendorCartConfigs";
+const ADD_TO_VENDOR_SITE_ENABLED =
+  typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" && QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true;
+
+/**
+ * @param {unknown} value
+ * @param {string} sku
+ * @param {string} qty
+ * @returns {unknown}
+ */
+function substituteCartPlaceholders(value, sku, qty) {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    return value.split("{{SKU}}").join(sku).split("{{QTY}}").join(qty);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    return value.map(function (v) {
+      return substituteCartPlaceholders(v, sku, qty);
+    });
+  }
+  if (typeof value === "object") {
+    const out = {};
+    Object.keys(value).forEach(function (k) {
+      out[k] = substituteCartPlaceholders(value[k], sku, qty);
+    });
+    return out;
+  }
+  return value;
+}
+
+/**
+ * @param {string} cookieName
+ * @param {string} url
+ * @returns {Promise<string|null>}
+ */
+async function readCookieValueForUrl(cookieName, url) {
+  if (!cookieName || !url || !chrome.cookies || typeof chrome.cookies.get !== "function") {
+    return null;
+  }
+  try {
+    const direct = await chrome.cookies.get({ url: url, name: cookieName });
+    if (direct && direct.value) return String(direct.value);
+  } catch (e) {
+    /* ignore */
+  }
+  try {
+    const host = hostnameOf(url);
+    let cookies = await chrome.cookies.getAll({ domain: host });
+    if (!cookies || !cookies.length) {
+      const parts = host.split(".");
+      if (parts.length > 2) {
+        cookies = await chrome.cookies.getAll({ domain: parts.slice(-2).join(".") });
+      }
+    }
+    const list = cookies || [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].name === cookieName && list[i].value) {
+        return String(list[i].value);
+      }
+    }
+  } catch (e2) {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * @param {object} tokenExtraction
+ * @param {string} requestUrl
+ * @returns {Promise<{ name: string, value: string, cookieName: string }|null>}
+ */
+async function resolveCartTokenHeader(tokenExtraction, requestUrl) {
+  if (!tokenExtraction) return null;
+  const headerName = tokenExtraction.header_name || tokenExtraction.headerName || "X-XSRF-TOKEN";
+  const source = String(tokenExtraction.source || "COOKIE").toUpperCase();
+  if (source !== "COOKIE") return null;
+
+  const locators = [];
+  const keys = tokenExtraction.locator_keys || tokenExtraction.locatorKeys;
+  if (Array.isArray(keys)) {
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i]) locators.push(String(keys[i]));
+    }
+  }
+  const primary = tokenExtraction.locator_key || tokenExtraction.locatorKey;
+  if (primary) locators.unshift(String(primary));
+  /* Always try common CSRF cookie names as fallback. */
+  const fallbacks = [
+    "XSRF-TOKEN",
+    "xsrf-token",
+    "CSRF-TOKEN",
+    "csrf-token",
+    "_csrf",
+    "CSRFToken",
+    "__RequestVerificationToken"
+  ];
+  for (let f = 0; f < fallbacks.length; f++) {
+    if (locators.indexOf(fallbacks[f]) === -1) locators.push(fallbacks[f]);
+  }
+
+  for (let i = 0; i < locators.length; i++) {
+    let value = await readCookieValueForUrl(locators[i], requestUrl);
+    if (value == null) continue;
+    try {
+      value = decodeURIComponent(value);
+    } catch (e) {
+      /* keep raw */
+    }
+    return { name: String(headerName), value: value, cookieName: locators[i] };
+  }
+  return null;
+}
+
+/**
+ * Strip stale CSRF header values from a saved config before replay.
+ * @param {Record<string,string>} headers
+ * @returns {Record<string,string>}
+ */
+function scrubStaleCartHeaders(headers) {
+  const out = {};
+  const h = headers || {};
+  const drop =
+    /^(cookie|authorization|x-csrf-token|x-xsrf-token|x-request-verification-token|requestverificationtoken|anti-forgery|x-anti-forgery)$/i;
+  Object.keys(h).forEach(function (k) {
+    if (drop.test(k)) return;
+    out[k] = h[k];
+  });
+  return out;
+}
+
+/**
+ * @param {string} url
+ * @returns {{ origin: string, referer: string }}
+ */
+function vendorOriginReferer(url) {
+  try {
+    const u = new URL(url);
+    return { origin: u.origin, referer: u.origin + "/" };
+  } catch (e) {
+    return { origin: "", referer: "" };
+  }
+}
+
+/**
+ * @param {unknown} template
+ * @param {Record<string,string>} headers
+ * @returns {{ body: string|null, contentType: string|null }}
+ */
+function serializeCartPayload(template, headers) {
+  if (template == null) return { body: null, contentType: null };
+  const ct =
+    (headers && (headers["Content-Type"] || headers["content-type"])) || "application/json";
+  if (typeof template === "string") {
+    return { body: template, contentType: ct };
+  }
+  if (String(ct).toLowerCase().indexOf("application/x-www-form-urlencoded") !== -1) {
+    const params = new URLSearchParams();
+    Object.keys(template).forEach(function (k) {
+      const v = template[k];
+      if (v != null && typeof v !== "object") params.append(k, String(v));
+    });
+    return { body: params.toString(), contentType: ct };
+  }
+  return { body: JSON.stringify(template), contentType: ct || "application/json" };
+}
+
+/**
+ * Execute a saved vendorCartConfigs add_to_cart mapping with the user's session cookies.
+ * @param {object} message
+ * @returns {Promise<object>}
+ */
+async function runAddToVendorCart(message) {
+  if (!ADD_TO_VENDOR_SITE_ENABLED) {
+    return {
+      ok: false,
+      error: "feature_disabled",
+      errorMessage: "Add to vendor site is disabled."
+    };
+  }
+  const sku = String((message && message.sku) || "").trim();
+  const qty = String((message && message.qty) || "1").trim() || "1";
+  const vendorId = String((message && message.vendorId) || "")
+    .trim()
+    .toLowerCase();
+  if (!sku) {
+    return { ok: false, error: "missing_sku", errorMessage: "Catalog / SKU is required." };
+  }
+  if (!vendorId) {
+    return { ok: false, error: "missing_vendor", errorMessage: "Could not resolve vendor." };
+  }
+
+  const stored = await chrome.storage.local.get([CART_CONFIGS_STORAGE_KEY]);
+  const all = (stored && stored[CART_CONFIGS_STORAGE_KEY]) || {};
+  let cfg = all[vendorId] || null;
+  if (!cfg && message && message.config) {
+    cfg = message.config;
+  }
+  if (!cfg || !cfg.add_to_cart || cfg.add_to_cart.enabled === false) {
+    return {
+      ok: false,
+      error: "no_config",
+      errorMessage:
+        'No saved cart mapping for vendor "' +
+        vendorId +
+        '". Map Add to cart on that vendor site first.',
+      vendorId: vendorId
+    };
+  }
+
+  const atc = cfg.add_to_cart;
+  const method = String(atc.method || "POST").toUpperCase();
+  const urlTemplate = String(atc.url_template || "");
+  if (!urlTemplate) {
+    return { ok: false, error: "bad_config", errorMessage: "Cart config is missing url_template." };
+  }
+  const url = String(substituteCartPlaceholders(urlTemplate, sku, qty));
+  const headers = scrubStaleCartHeaders(Object.assign({}, atc.headers || {}));
+  const site = vendorOriginReferer(url);
+  if (site.origin && !headers.Origin && !headers.origin) headers.Origin = site.origin;
+  if (site.referer && !headers.Referer && !headers.referer) headers.Referer = site.referer;
+  if (!headers["X-Requested-With"] && !headers["x-requested-with"]) {
+    headers["X-Requested-With"] = "XMLHttpRequest";
+  }
+
+  const token = await resolveCartTokenHeader(atc.token_extraction, url);
+  if (token) {
+    headers[token.name] = token.value;
+    /* Some stacks expect both casings / both XSRF + CSRF header names. */
+    const lower = token.name.toLowerCase();
+    if (lower === "x-xsrf-token" && !headers["X-CSRF-TOKEN"] && !headers["x-csrf-token"]) {
+      headers["X-CSRF-TOKEN"] = token.value;
+    }
+    if (lower === "x-csrf-token" && !headers["X-XSRF-TOKEN"] && !headers["x-xsrf-token"]) {
+      headers["X-XSRF-TOKEN"] = token.value;
+    }
+  }
+  if (atc.token_extraction && atc.token_extraction.required && !token) {
+    return {
+      ok: false,
+      error: "token_missing",
+      errorMessage:
+        "Could not read CSRF/session token cookie. Open the vendor site while logged in, then try again.",
+      vendorId: vendorId,
+      url: url,
+      debug: {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        request: { vendorId: vendorId, sku: sku, qty: qty, method: method, url: url },
+        token: { found: false, required: true },
+        config: { hasAddToCart: true, urlTemplate: urlTemplate }
+      }
+    };
+  }
+
+  const payloadTemplate = substituteCartPlaceholders(atc.payload_template || {}, sku, qty);
+  const serialized = serializeCartPayload(payloadTemplate, headers);
+  if (serialized.contentType) {
+    headers["Content-Type"] = serialized.contentType;
+  }
+
+  const debugRequestHeaders = {};
+  Object.keys(headers).forEach(function (k) {
+    const lower = String(k).toLowerCase();
+    if (/csrf|xsrf|verification|anti-forgery|authorization|cookie/i.test(lower)) {
+      debugRequestHeaders[k] = headers[k] ? "[redacted " + String(headers[k]).length + " chars]" : "";
+    } else {
+      debugRequestHeaders[k] = headers[k];
+    }
+  });
+
+  let res;
+  try {
+    const init = {
+      method: method,
+      headers: headers,
+      credentials: "include",
+      redirect: "follow"
+    };
+    if (method !== "GET" && method !== "HEAD" && serialized.body != null) {
+      init.body = serialized.body;
+    }
+    res = await fetch(url, init);
+  } catch (e) {
+    return {
+      ok: false,
+      error: "network",
+      errorMessage: (e && e.message) || "Network error calling vendor cart API.",
+      vendorId: vendorId,
+      url: url,
+      debug: {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        request: {
+          vendorId: vendorId,
+          sku: sku,
+          qty: qty,
+          method: method,
+          url: url,
+          headers: debugRequestHeaders,
+          bodyPreview: serialized.body != null ? String(serialized.body).slice(0, 2000) : null
+        },
+        token: token
+          ? { found: true, cookieName: token.cookieName, headerName: token.name }
+          : { found: false },
+        networkError: (e && e.message) || "fetch_failed"
+      }
+    };
+  }
+
+  const status = res.status;
+  const responseHeaders = {};
+  try {
+    res.headers.forEach(function (v, k) {
+      responseHeaders[k] = v;
+    });
+  } catch (eHdr) {
+    /* ignore */
+  }
+  let responseText = "";
+  try {
+    responseText = await res.text();
+  } catch (e2) {
+    responseText = "";
+  }
+  const success = atc.success_indicator || {};
+  const expectedStatus = success.status_code != null ? Number(success.status_code) : null;
+  let ok = status >= 200 && status < 300;
+  if (expectedStatus != null) {
+    ok =
+      status === expectedStatus ||
+      (expectedStatus >= 200 && expectedStatus < 300 && status >= 200 && status < 300);
+  }
+
+  let jsonPathOk = true;
+  const jsonPath = success.json_path;
+  if (jsonPath && String(jsonPath).trim()) {
+    try {
+      const parsed = JSON.parse(responseText);
+      const path = String(jsonPath)
+        .replace(/^\$\.?/, "")
+        .split(".");
+      let cur = parsed;
+      for (let i = 0; i < path.length; i++) {
+        if (cur == null) break;
+        cur = cur[path[i]];
+      }
+      if (Object.prototype.hasOwnProperty.call(success, "expected_value")) {
+        jsonPathOk = cur === success.expected_value;
+      } else {
+        jsonPathOk = !!cur;
+      }
+      ok = ok && jsonPathOk;
+    } catch (e3) {
+      jsonPathOk = false;
+      ok = false;
+    }
+  }
+
+  let errorMessage = null;
+  if (!ok) {
+    if (status === 403) {
+      errorMessage =
+        "Vendor cart API returned HTTP 403 (forbidden). Usually a stale/missing CSRF token or logged-out session — open the vendor site logged in, re-run Cart mapping if needed, then retry." +
+        (token ? " (refreshed token from cookie " + token.cookieName + ")" : " (no CSRF cookie found)");
+    } else {
+      errorMessage =
+        "Vendor cart API returned HTTP " +
+        status +
+        (jsonPathOk ? "" : " (success path mismatch)") +
+        ".";
+    }
+  }
+
+  const responseFull = String(responseText || "");
+  return {
+    ok: ok,
+    vendorId: vendorId,
+    sku: sku,
+    qty: qty,
+    url: url,
+    method: method,
+    status: status,
+    tokenCookie: token ? token.cookieName : null,
+    responsePreview: responseFull.slice(0, 800),
+    responseBody: responseFull.slice(0, 50000),
+    error: ok ? null : status === 403 ? "forbidden" : "cart_rejected",
+    errorMessage: errorMessage,
+    debug: {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      request: {
+        vendorId: vendorId,
+        sku: sku,
+        qty: qty,
+        method: method,
+        url: url,
+        headers: debugRequestHeaders,
+        bodyPreview: serialized.body != null ? String(serialized.body).slice(0, 4000) : null
+      },
+      token: token
+        ? { found: true, cookieName: token.cookieName, headerName: token.name }
+        : { found: false, required: !!(atc.token_extraction && atc.token_extraction.required) },
+      response: {
+        status: status,
+        ok: ok,
+        headers: responseHeaders,
+        body: responseFull.slice(0, 50000)
+      },
+      successIndicator: success,
+      jsonPathOk: jsonPathOk
+    }
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "PRODUCT_CAPTURE" && sender.tab && sender.tab.id != null) {
     if (fetchPriceJobs.has(sender.tab.id)) {
@@ -685,6 +1135,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, parsed: o });
     };
     doFetch();
+    return true;
+  }
+
+  if (message.type === "ADD_TO_VENDOR_CART") {
+    runAddToVendorCart(message)
+      .then(function (result) {
+        sendResponse(result);
+      })
+      .catch(function (e) {
+        sendResponse({
+          ok: false,
+          error: "unexpected",
+          errorMessage: (e && e.message) || "Unexpected error."
+        });
+      });
     return true;
   }
 });

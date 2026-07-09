@@ -23,6 +23,7 @@ async function initQuartzy() {
     });
 
     initLookupPriceOnAddRequest();
+    initAddToVendorSite();
 }
 
 // Start initialization
@@ -1131,3 +1132,523 @@ function initLookupPriceOnAddRequest() {
     obs.observe(document.documentElement, { childList: true, subtree: true });
     setInterval(tick, 1500);
 }
+
+/* —— Add to vendor site (Order Requests IDP + Group Actions) —— */
+
+const ATV_STYLE_ID = "qc-add-to-vendor-style";
+const ATV_IDP_BTN_ID = "order-request-add-to-vendor-site";
+const ATV_GROUP_BTN_ID = "order-request-group-action-add-to-vendor-site";
+const ATV_TOAST_ID = "qc-atv-toast";
+const REQUESTS_PATH_RE = /^\/groups\/\d+\/requests(?:\/|$)/i;
+
+function isAddToVendorSiteEnabled() {
+    return typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" && QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true;
+}
+
+function isOrderRequestsPage() {
+    try {
+        return REQUESTS_PATH_RE.test(location.pathname);
+    } catch (e) {
+        return false;
+    }
+}
+
+function ensureAddToVendorStyles() {
+    if (document.getElementById(ATV_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = ATV_STYLE_ID;
+    style.textContent = `
+#${ATV_IDP_BTN_ID} {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 6px 0 0;
+  padding: 6px 12px;
+  border: 1px solid #f75e2d;
+  border-radius: 4px;
+  background: #fff;
+  color: #f75e2d;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#${ATV_IDP_BTN_ID}:hover:not(:disabled) {
+  background: #fff7f3;
+}
+#${ATV_IDP_BTN_ID}:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+#${ATV_GROUP_BTN_ID} {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+#${ATV_GROUP_BTN_ID}:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+#${ATV_GROUP_BTN_ID}:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+#${ATV_TOAST_ID} {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483646;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+#${ATV_TOAST_ID}.is-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+#${ATV_TOAST_ID}.is-error {
+  background: #7f1d1d;
+}
+#${ATV_TOAST_ID}.is-ok {
+  background: #14532d;
+}
+`;
+    document.documentElement.appendChild(style);
+}
+
+let atvToastTimer = null;
+function showAtvToast(message, kind) {
+    let el = document.getElementById(ATV_TOAST_ID);
+    if (!el) {
+        el = document.createElement("div");
+        el.id = ATV_TOAST_ID;
+        el.setAttribute("role", "status");
+        document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.className = "is-show" + (kind === "error" ? " is-error" : kind === "ok" ? " is-ok" : "");
+    if (atvToastTimer) clearTimeout(atvToastTimer);
+    atvToastTimer = setTimeout(function () {
+        el.classList.remove("is-show");
+    }, 4500);
+}
+
+/**
+ * Map Quartzy vendor display name (or URL host) → vendorCartConfigs key.
+ * @param {string} vendorName
+ * @param {string} [productUrl]
+ * @returns {string}
+ */
+function resolveVendorIdFromQuartzy(vendorName, productUrl) {
+    const name = String(vendorName || "").toLowerCase();
+    const url = String(productUrl || "").toLowerCase();
+    const hay = name + " " + url;
+    if (/fisher\s*scientific|fishersci/.test(hay)) return "fisher";
+    if (/thermo\s*fisher|thermofisher/.test(hay)) return "thermo";
+    if (/\bvwr\b|avantor/.test(hay)) return "vwr";
+    if (/sigma|millipore/.test(hay)) return "sigma";
+    if (/abcam/.test(hay)) return "abcam";
+    if (/thomas\s*(scientific|ci)/.test(hay)) return "thomas";
+    try {
+        if (productUrl && /^https?:/i.test(productUrl)) {
+            const host = new URL(productUrl).hostname.toLowerCase().replace(/^www\./, "");
+            if (host.indexOf("fishersci") !== -1) return "fisher";
+            if (host.indexOf("thermofisher") !== -1) return "thermo";
+            if (host.indexOf("vwr") !== -1 || host.indexOf("avantor") !== -1) return "vwr";
+            if (host.indexOf("sigma") !== -1 || host.indexOf("millipore") !== -1) return "sigma";
+            if (host.indexOf("abcam") !== -1) return "abcam";
+            const parts = host.split(".");
+            if (parts.length >= 2) return parts[parts.length - 2];
+        }
+    } catch (e) {
+        /* ignore */
+    }
+    const cleaned = name
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)[0];
+    return cleaned || "";
+}
+
+function readInputValue(el) {
+    if (!el) return "";
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+        return String(el.value != null ? el.value : "").trim();
+    }
+    return String(el.textContent || "").trim();
+}
+
+/**
+ * @param {Element} root
+ * @returns {{ sku: string, qty: string, vendorName: string, productUrl: string }}
+ */
+function scrapeIdpLine(root) {
+    const panel = root || document.querySelector(".details-panel");
+    const empty = { sku: "", qty: "1", vendorName: "", productUrl: "" };
+    if (!panel) return empty;
+
+    const catalog =
+        panel.querySelector("input.catalog-number") ||
+        panel.querySelector('input[name*="catalog" i]') ||
+        panel.querySelector(".catalog-number input");
+    const qtyEl =
+        panel.querySelector("input.quantity-input") ||
+        panel.querySelector(".quantity input") ||
+        panel.querySelector('input[name*="quantity" i]');
+
+    let vendorName = "";
+    const vendorSelect = panel.querySelector(".vendor-select");
+    if (vendorSelect) {
+        vendorName =
+            readInputValue(vendorSelect.querySelector("input")) ||
+            String(
+                (vendorSelect.querySelector(".ember-power-select-selected-item") ||
+                    vendorSelect.querySelector("[aria-current]") ||
+                    vendorSelect).textContent || ""
+            ).trim();
+    }
+    if (!vendorName) {
+        const company = panel.querySelector(".company-name");
+        if (company) vendorName = String(company.textContent || "").trim();
+    }
+
+    let productUrl = "";
+    const urlAnchor =
+        panel.querySelector('[data-analytics-id="order-request.item.product-url"]') ||
+        panel.querySelector('a[href*="http"][target="_blank"]');
+    if (urlAnchor && urlAnchor.getAttribute) {
+        productUrl = String(urlAnchor.getAttribute("href") || "").trim();
+    }
+
+    return {
+        sku: readInputValue(catalog),
+        qty: readInputValue(qtyEl) || "1",
+        vendorName: vendorName,
+        productUrl: productUrl
+    };
+}
+
+/**
+ * @param {Element} row
+ * @returns {{ sku: string, qty: string, vendorName: string, productUrl: string }}
+ */
+function scrapeTableRow(row) {
+    const empty = { sku: "", qty: "1", vendorName: "", productUrl: "" };
+    if (!row) return empty;
+    const vendorEl = row.querySelector(".column.vendor .company-name") || row.querySelector(".company-name");
+    const catalogEl =
+        row.querySelector(".catalog-number") ||
+        row.querySelector(".catalog-number-line") ||
+        row.querySelector(".column.catalog-number");
+    const qtyEl =
+        row.querySelector(".column.quantity") ||
+        row.querySelector(".quantity") ||
+        row.querySelector('td[data-column="quantity"]');
+    const urlEl =
+        row.querySelector('[data-analytics-id="order-request.item.product-url"]') ||
+        row.querySelector('a[href^="http"]');
+
+    let sku = "";
+    if (catalogEl) {
+        const input = catalogEl.querySelector && catalogEl.querySelector("input");
+        sku = input ? readInputValue(input) : String(catalogEl.textContent || "").trim();
+    }
+    let qty = "1";
+    if (qtyEl) {
+        const input = qtyEl.querySelector && qtyEl.querySelector("input");
+        qty = input ? readInputValue(input) : String(qtyEl.textContent || "").replace(/[^\d.]/g, "").trim() || "1";
+    }
+
+    return {
+        sku: sku,
+        qty: qty,
+        vendorName: vendorEl ? String(vendorEl.textContent || "").trim() : "",
+        productUrl: urlEl && urlEl.getAttribute ? String(urlEl.getAttribute("href") || "").trim() : ""
+    };
+}
+
+/**
+ * @returns {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>}
+ */
+function scrapeSelectedRequestRows() {
+    const rows = Array.from(document.querySelectorAll("tr.item-row"));
+    const selected = [];
+    rows.forEach(function (row) {
+        const cb =
+            row.querySelector(".is-selected-checkbox input[type='checkbox']") ||
+            row.querySelector("td.column.checkbox input[type='checkbox']") ||
+            row.querySelector('input[type="checkbox"]');
+        if (cb && cb.checked) {
+            selected.push(scrapeTableRow(row));
+        }
+    });
+    return selected;
+}
+
+/**
+ * @param {{ sku: string, qty: string, vendorName: string, productUrl: string }} line
+ * @returns {Promise<object>}
+ */
+function sendAddToVendorCart(line) {
+    const vendorId = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+    return new Promise(function (resolve) {
+        try {
+            chrome.runtime.sendMessage(
+                {
+                    type: "ADD_TO_VENDOR_CART",
+                    vendorId: vendorId,
+                    sku: line.sku,
+                    qty: line.qty || "1",
+                    vendorName: line.vendorName,
+                    productUrl: line.productUrl
+                },
+                function (response) {
+                    if (chrome.runtime.lastError) {
+                        resolve({
+                            ok: false,
+                            error: "extension",
+                            errorMessage: chrome.runtime.lastError.message || "Extension messaging failed."
+                        });
+                        return;
+                    }
+                    resolve(response || { ok: false, error: "empty", errorMessage: "No response from extension." });
+                }
+            );
+        } catch (e) {
+            resolve({
+                ok: false,
+                error: "extension",
+                errorMessage: (e && e.message) || "Extension messaging failed."
+            });
+        }
+    });
+}
+
+/**
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ */
+async function runAddToVendorForLines(lines) {
+    const usable = (lines || []).filter(function (l) {
+        return l && String(l.sku || "").trim();
+    });
+    if (!usable.length) {
+        showAtvToast("No catalog # found on the selected request(s).", "error");
+        return;
+    }
+    showAtvToast(
+        usable.length === 1 ? "Adding to vendor cart…" : "Adding " + usable.length + " items to vendor carts…",
+        ""
+    );
+    let okCount = 0;
+    const errors = [];
+    for (let i = 0; i < usable.length; i++) {
+        const line = usable[i];
+        const vendorId = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+        if (!vendorId) {
+            errors.push((line.sku || "?") + ": unknown vendor");
+            continue;
+        }
+        const result = await sendAddToVendorCart(line);
+        if (result && result.ok) {
+            okCount += 1;
+        } else {
+            let detail =
+                (result && result.errorMessage) || (result && result.error) || "failed";
+            if (result && result.responsePreview) {
+                const snippet = String(result.responsePreview)
+                    .replace(/\s+/g, " ")
+                    .trim()
+                    .slice(0, 120);
+                if (snippet) detail += " — " + snippet;
+            }
+            errors.push((line.sku || "?") + ": " + detail);
+        }
+        if (i < usable.length - 1) {
+            await new Promise(function (r) {
+                setTimeout(r, 400);
+            });
+        }
+    }
+    if (okCount && !errors.length) {
+        showAtvToast(
+            okCount === 1 ? "Added to vendor cart." : "Added " + okCount + " items to vendor carts.",
+            "ok"
+        );
+    } else if (okCount && errors.length) {
+        showAtvToast(okCount + " ok, " + errors.length + " failed. " + errors[0], "error");
+    } else {
+        showAtvToast(errors[0] || "Could not add to vendor cart.", "error");
+    }
+}
+
+function injectIdpAddToVendorButton() {
+    const panel = document.querySelector(".details-panel");
+    if (!panel) {
+        const orphan = document.getElementById(ATV_IDP_BTN_ID);
+        if (orphan) orphan.remove();
+        return;
+    }
+    if (document.getElementById(ATV_IDP_BTN_ID)) return;
+
+    const menu =
+        panel.querySelector(".main-panel-header .right-column .cta .menu") ||
+        panel.querySelector(".cta .menu") ||
+        panel.querySelector(".main-panel-header .cta");
+    if (!menu) return;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = ATV_IDP_BTN_ID;
+    btn.textContent = "Add to vendor site";
+    btn.title = "Add this request’s catalog # to the vendor cart (uses your mapped cart API)";
+    btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const line = scrapeIdpLine(panel);
+        runAddToVendorForLines([line]).finally(function () {
+            btn.disabled = false;
+        });
+    });
+
+    const more = menu.querySelector(".more-dropdown");
+    if (more && more.parentNode === menu) {
+        menu.insertBefore(btn, more);
+    } else {
+        menu.insertBefore(btn, menu.firstChild);
+    }
+}
+
+function findGroupActionsMenuList() {
+    const trigger = document.getElementById("order-request-group-actions");
+    if (!trigger) return null;
+    /* Ember dropdown content may be portaled; prefer open list near trigger, else any status-button list. */
+    const openMenu =
+        document.querySelector('[aria-labelledby="order-request-group-actions"]') ||
+        document.querySelector("#order-request-group-actions + * ul") ||
+        document.querySelector(".ember-basic-dropdown-content ul");
+    if (openMenu && openMenu.querySelector) {
+        const withStatus = openMenu.querySelector("button") ? openMenu : null;
+        if (withStatus) {
+            if (openMenu.tagName === "UL") return openMenu;
+            const ul = openMenu.querySelector("ul");
+            if (ul) return ul;
+            return openMenu;
+        }
+    }
+    const buttons = Array.from(document.querySelectorAll("button"));
+    for (let i = 0; i < buttons.length; i++) {
+        const t = String(buttons[i].textContent || "").trim();
+        if (/^request again$/i.test(t) || /^order with qbot$/i.test(t)) {
+            const li = buttons[i].closest("li");
+            const ul = li && li.parentElement;
+            if (ul && (ul.tagName === "UL" || ul.getAttribute("role") === "menu")) {
+                return ul;
+            }
+        }
+    }
+    return null;
+}
+
+function injectGroupAddToVendorButton() {
+    if (document.getElementById(ATV_GROUP_BTN_ID)) return;
+    const list = findGroupActionsMenuList();
+    if (!list) return;
+
+    const li = document.createElement("li");
+    /* Match Ember list-item pattern without depending on CSS-module hashes */
+    li.setAttribute("data-qc-atv-group-item", "1");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = ATV_GROUP_BTN_ID;
+    btn.textContent = "Add to Vendor Site";
+    btn.title = "Add selected requests to their vendor carts";
+    btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const lines = scrapeSelectedRequestRows();
+        runAddToVendorForLines(lines).finally(function () {
+            btn.disabled = false;
+        });
+    });
+    li.appendChild(btn);
+
+    const kids = Array.from(list.children);
+    let insertBefore = null;
+    for (let i = 0; i < kids.length; i++) {
+        const label = String(kids[i].textContent || "").trim();
+        if (/^export/i.test(label) || /^cancel/i.test(label) || /^delete/i.test(label)) {
+            insertBefore = kids[i];
+            break;
+        }
+    }
+    if (insertBefore) {
+        list.insertBefore(li, insertBefore);
+    } else {
+        list.appendChild(li);
+    }
+}
+
+function scanAndInjectAddToVendorControls() {
+    if (!isAddToVendorSiteEnabled() || !isOrderRequestsPage()) return;
+    ensureAddToVendorStyles();
+    injectIdpAddToVendorButton();
+    injectGroupAddToVendorButton();
+}
+
+function initAddToVendorSite() {
+    if (!isAddToVendorSiteEnabled()) return;
+
+    let scheduled = false;
+    const tick = function () {
+        scheduled = false;
+        scanAndInjectAddToVendorControls();
+    };
+    const schedule = function () {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(tick);
+    };
+
+    tick();
+    const obs = new MutationObserver(function () {
+        schedule();
+    });
+    obs.observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(tick, 2000);
+
+    document.addEventListener(
+        "click",
+        function (e) {
+            const t = e.target;
+            if (!t || !t.closest) return;
+            if (t.closest("#order-request-group-actions")) {
+                setTimeout(scanAndInjectAddToVendorControls, 50);
+                setTimeout(scanAndInjectAddToVendorControls, 250);
+            }
+        },
+        true
+    );
+}
+

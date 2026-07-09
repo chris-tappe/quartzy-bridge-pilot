@@ -1328,7 +1328,8 @@ function captureFetchPricePageSnapshot() {
   const bodyText = ((document.body && document.body.innerText) || "").replace(/\s+/g, " ").trim();
   const jsonLdCount = document.querySelectorAll('script[type="application/ld+json"]').length;
   const priceEls = document.querySelectorAll(
-    '.webprice-container, [itemprop="price"], meta[itemprop="price"], .price-final_price, [data-price-type]'
+    "app-avtr-add-to-cart, .webprice-container, [itemprop=\"price\"], meta[itemprop=\"price\"], " +
+      ".price-final_price, [data-price-type]"
   );
   const priceSamples = [];
   for (let i = 0; i < Math.min(priceEls.length, 8); i++) {
@@ -2226,6 +2227,309 @@ async function runBaselineCaptureForFetchPrice(log) {
 }
 
 /**
+ * SPA shells (e.g. VWR Spartacus) often report document.readyState complete while body is still empty.
+ * Cookie banners inflate bodyText early — require product chrome, not just any text.
+ * @returns {boolean}
+ */
+function fetchPricePageLooksHydrated() {
+  const h1 = document.querySelector("h1");
+  if (h1 && String(h1.innerText || "").trim()) {
+    return true;
+  }
+  if (
+    document.querySelector(
+      "app-avtr-product-name, app-avtr-add-to-cart, #pricing_container, .pricing_container, " +
+        ".product_add_to_cart, .webprice-container, [itemprop=\"price\"]"
+    )
+  ) {
+    return true;
+  }
+  const bodyText = ((document.body && document.body.innerText) || "").replace(/\s+/g, " ").trim();
+  /* Avoid treating cookie/consent chrome as hydration; need a price-looking token. */
+  if (bodyText.length >= 400 && /\$\s*\d/.test(bodyText)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Buy-box / ATC widget with a visible money amount (contract price usually lands here after auth).
+ * JSON-LD alone is not enough — VWR injects guest Offer.price before the logged-in widget updates.
+ * @returns {boolean}
+ */
+function fetchPriceHasPricingWidget() {
+  const widgets = document.querySelectorAll(
+    "app-avtr-add-to-cart, .webprice-container, #pricing_container, .pricing_container, " +
+      ".product_add_to_cart, [data-price-type], .price-final_price"
+  );
+  for (let i = 0; i < widgets.length; i++) {
+    const text = String(widgets[i].innerText || widgets[i].textContent || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (/\$\s*\d/.test(text) || /\b\d+\.\d{2}\b/.test(text)) {
+      return true;
+    }
+  }
+  const meta = document.querySelector('meta[itemprop="price"][content]');
+  if (meta && String(meta.getAttribute("content") || "").trim()) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Weaker fallback when no dedicated widget appears (still prefer widget when present).
+ * @returns {boolean}
+ */
+function fetchPriceHasPriceSignal() {
+  if (fetchPriceHasPricingWidget()) {
+    return true;
+  }
+  const bodyText = ((document.body && document.body.innerText) || "").slice(0, 20000);
+  return /\$\s*\d/.test(bodyText) || /\bUSD\s*\d/i.test(bodyText);
+}
+
+/**
+ * Best-effort visible price sample from the buy box (for settle detection).
+ * @returns {string}
+ */
+function readFetchPriceDomPriceSample() {
+  const roots = document.querySelectorAll(
+    "app-avtr-add-to-cart, .webprice-container, #pricing_container, .pricing_container, .product_add_to_cart"
+  );
+  for (let i = 0; i < roots.length; i++) {
+    const text = String(roots[i].innerText || "").replace(/\s+/g, " ");
+    const m = text.match(/\$\s*[\d,]+(?:\.\d{2})?/);
+    if (m) {
+      return m[0].replace(/\s+/g, "");
+    }
+  }
+  if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
+    try {
+      const probe = { price: "", catalogNumber: "", itemName: "", unitSize: "" };
+      const sources = { price: null, catalogNumber: null, itemName: null, unitSize: null };
+      const withHints = QuartzyDomFieldHints.applySavedHints(probe, sources, normalizeWandValue);
+      if (withHints && withHints.merged && isNonEmptyTrim(withHints.merged.price)) {
+        return String(withHints.merged.price).replace(/\s+/g, "");
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  return "";
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function fetchPriceSleep(ms) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Wait until the PDP shell has real content (or timeout). Uses MutationObserver + poll.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} log
+ * @param {number} timeoutMs
+ * @param {function(): boolean} predicate
+ * @param {string} stepName
+ * @returns {Promise<boolean>}
+ */
+function waitForFetchPricePredicate(log, timeoutMs, predicate, stepName) {
+  const ms = timeoutMs != null ? timeoutMs : 12000;
+  return new Promise(function (resolve) {
+    if (predicate()) {
+      fpDebug(log, stepName, { waitedMs: 0, ok: true, reason: "already" });
+      resolve(true);
+      return;
+    }
+    const t0 = Date.now();
+    let done = false;
+    let obs = null;
+    let poll = null;
+    const finish = function (ok, reason) {
+      if (done) {
+        return;
+      }
+      done = true;
+      if (poll) {
+        clearInterval(poll);
+      }
+      try {
+        if (obs) {
+          obs.disconnect();
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      fpDebug(log, stepName, { waitedMs: Date.now() - t0, ok: ok, reason: reason });
+      resolve(ok);
+    };
+    const check = function () {
+      if (predicate()) {
+        finish(true, "content");
+      }
+    };
+    if (typeof MutationObserver !== "undefined" && document.documentElement) {
+      try {
+        obs = new MutationObserver(check);
+        obs.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          characterData: true
+        });
+      } catch (e) {
+        obs = null;
+      }
+    }
+    poll = setInterval(check, 250);
+    setTimeout(function () {
+      finish(false, "timeout");
+    }, ms);
+  });
+}
+
+/**
+ * Guest/list price often paints first; wait until the buy-box amount stops changing.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} log
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+async function waitForFetchPriceStabilize(log, timeoutMs) {
+  const ms = timeoutMs != null ? timeoutMs : 6000;
+  const STABLE_MS = 1200;
+  const t0 = Date.now();
+  let last = readFetchPriceDomPriceSample();
+  let stableSince = Date.now();
+  let changes = 0;
+  while (Date.now() - t0 < ms) {
+    await fetchPriceSleep(300);
+    const cur = readFetchPriceDomPriceSample();
+    if (cur && cur !== last) {
+      changes += 1;
+      last = cur;
+      stableSince = Date.now();
+      fpDebug(log, "price_change", { price: cur, changes: changes });
+      continue;
+    }
+    if (cur && Date.now() - stableSince >= STABLE_MS) {
+      fpDebug(log, "price_settle", {
+        waitedMs: Date.now() - t0,
+        price: cur,
+        changes: changes,
+        ok: true
+      });
+      return;
+    }
+  }
+  fpDebug(log, "price_settle", {
+    waitedMs: Date.now() - t0,
+    price: last || null,
+    changes: changes,
+    ok: !!last,
+    reason: "timeout"
+  });
+}
+
+/**
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} log
+ * @returns {Promise<void>}
+ */
+async function waitForFetchPricePageReady(log) {
+  await waitForFetchPricePredicate(log, 12000, fetchPricePageLooksHydrated, "hydration_wait");
+  /* Prefer the live buy box over early JSON-LD guest Offer.price. */
+  const widgetOk = await waitForFetchPricePredicate(
+    log,
+    12000,
+    fetchPriceHasPricingWidget,
+    "pricing_widget_wait"
+  );
+  if (!widgetOk && !fetchPriceHasPriceSignal()) {
+    await waitForFetchPricePredicate(log, 4000, fetchPriceHasPriceSignal, "price_signal_wait");
+  }
+  if (fetchPriceHasPricingWidget() || readFetchPriceDomPriceSample()) {
+    await waitForFetchPriceStabilize(log, 7000);
+  } else {
+    await fetchPriceSleep(400);
+  }
+}
+
+/**
+ * @param {object} baseline
+ * @param {object[]} variants
+ * @returns {boolean}
+ */
+function fetchPriceScrapeHasPrice(baseline, variants) {
+  if (baseline && isNonEmptyTrim(baseline.price)) {
+    return true;
+  }
+  if (!Array.isArray(variants)) {
+    return false;
+  }
+  for (let i = 0; i < variants.length; i++) {
+    if (variants[i] && isNonEmptyTrim(variants[i].price)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * JSON-LD Offer.price is often the public/list price before auth refreshes the widget.
+ * @param {object} baseline
+ * @returns {boolean}
+ */
+function fetchPriceIsJsonLdOnlyPrice(baseline) {
+  if (!baseline || !isNonEmptyTrim(baseline.price)) {
+    return false;
+  }
+  const src = baseline.fieldSources && baseline.fieldSources.price;
+  if (!src || String(src).indexOf("json-ld") !== 0) {
+    return false;
+  }
+  return !fetchPriceHasPricingWidget();
+}
+
+/**
+ * @param {string} s
+ * @returns {string}
+ */
+function fetchPriceMoneyKey(s) {
+  const m = String(s || "").replace(/,/g, "").match(/(\d+(?:\.\d{1,2})?)/);
+  return m ? m[1] : "";
+}
+
+/**
+ * When the buy box shows a different amount than JSON-LD guest Offer.price, prefer the widget.
+ * @param {object} baseline
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} log
+ */
+function preferFetchPriceDomOverJsonLd(baseline, log) {
+  if (!baseline || !baseline.fieldSources) {
+    return;
+  }
+  const src = baseline.fieldSources.price;
+  if (!src || String(src).indexOf("json-ld") !== 0) {
+    return;
+  }
+  const dom = readFetchPriceDomPriceSample();
+  if (!dom) {
+    return;
+  }
+  const a = fetchPriceMoneyKey(baseline.price);
+  const b = fetchPriceMoneyKey(dom);
+  if (!b || a === b) {
+    return;
+  }
+  const formatted = dom.indexOf("$") !== -1 ? dom : "$" + b;
+  fpDebug(log, "prefer_dom_over_jsonld", { from: baseline.price || "", to: formatted });
+  baseline.price = formatted;
+  baseline.fieldSources.price = "dom-pricing-widget";
+}
+
+/**
  * @param {string|undefined} catalogNumberHint
  * @returns {Promise<object>}
  */
@@ -2236,50 +2540,116 @@ async function handleFetchPriceScrape(catalogNumberHint) {
     href: location.href
   });
 
+  await waitForFetchPricePageReady(log);
+
   let pageSnapshot = null;
-  try {
-    pageSnapshot = captureFetchPricePageSnapshot();
-    fpDebug(log, "page_snapshot", {
-      title: pageSnapshot.title,
-      href: pageSnapshot.href,
-      pricingContainers: pageSnapshot.pricingContainers,
-      uomRadioCount: pageSnapshot.uomRadioCount,
-      sharedPriceWidget: pageSnapshot.sharedPriceWidget,
-      jsonLdScriptCount: pageSnapshot.jsonLdScriptCount,
-      priceElementSamples: pageSnapshot.priceElementSamples
-    });
-  } catch (e) {
-    fpDebug(log, "page_snapshot_error", { message: (e && e.message) || String(e) });
-  }
+  let blocker = null;
+  let loginDom = "unknown";
+  let baseline = {
+    itemName: "",
+    catalogNumber: "",
+    price: "",
+    unitSize: "",
+    url: location.href,
+    vendor: "",
+    fieldSources: { itemName: null, catalogNumber: null, price: null, unitSize: null }
+  };
+  let mode = "single";
+  let variants = [];
+  let outcomeSource = "none";
 
-  const blocker = detectFetchPricePageBlocker(log);
-  const loginDom = detectLoginStateFromDom(log);
-  const baseline = await runBaselineCaptureForFetchPrice(log);
-  const enumerated = await scrapeAllVariants(log, baseline);
-  let mode = enumerated.mode;
-  let variants = enumerated.variants || [];
-  let outcomeSource = enumerated.pattern || "none";
+  for (let pass = 0; pass < 4; pass++) {
+    try {
+      pageSnapshot = captureFetchPricePageSnapshot();
+      fpDebug(log, "page_snapshot", {
+        pass: pass + 1,
+        title: pageSnapshot.title,
+        href: pageSnapshot.href,
+        bodyTextLength: pageSnapshot.bodyTextLength,
+        pricingContainers: pageSnapshot.pricingContainers,
+        uomRadioCount: pageSnapshot.uomRadioCount,
+        sharedPriceWidget: pageSnapshot.sharedPriceWidget,
+        jsonLdScriptCount: pageSnapshot.jsonLdScriptCount,
+        priceElementSamples: pageSnapshot.priceElementSamples,
+        pricingWidget: fetchPriceHasPricingWidget(),
+        domPriceSample: readFetchPriceDomPriceSample() || null
+      });
+    } catch (e) {
+      fpDebug(log, "page_snapshot_error", { message: (e && e.message) || String(e), pass: pass + 1 });
+    }
 
-  if (!variants.length) {
-    mode = "single";
-    outcomeSource = "baseline_fallback";
-    variants = [
-      {
-        label: baseline.unitSize || baseline.itemName || "Product",
-        catalogNumber: baseline.catalogNumber || "",
+    blocker = detectFetchPricePageBlocker(log);
+    loginDom = detectLoginStateFromDom(log);
+    baseline = await runBaselineCaptureForFetchPrice(log);
+    preferFetchPriceDomOverJsonLd(baseline, log);
+    const enumerated = await scrapeAllVariants(log, baseline);
+    mode = enumerated.mode;
+    variants = enumerated.variants || [];
+    outcomeSource = enumerated.pattern || "none";
+
+    if (!variants.length) {
+      mode = "single";
+      outcomeSource = "baseline_fallback";
+      variants = [
+        {
+          label: baseline.unitSize || baseline.itemName || "Product",
+          catalogNumber: baseline.catalogNumber || "",
+          price: baseline.price || "",
+          unitSize: baseline.unitSize || "",
+          isSelected: true,
+          _priceSource: (baseline.fieldSources && baseline.fieldSources.price) || "baseline"
+        }
+      ];
+      fpDebug(log, "fallback_baseline", {
+        pass: pass + 1,
         price: baseline.price || "",
-        unitSize: baseline.unitSize || "",
-        isSelected: true,
-        _priceSource: (baseline.fieldSources && baseline.fieldSources.price) || "baseline"
-      }
-    ];
-    fpDebug(log, "fallback_baseline", {
-      price: baseline.price || "",
-      catalogNumber: baseline.catalogNumber || "",
-      fieldSources: baseline.fieldSources || null
-    });
-  } else if (variants.length === 1) {
-    mode = "single";
+        catalogNumber: baseline.catalogNumber || "",
+        fieldSources: baseline.fieldSources || null
+      });
+    } else if (variants.length === 1) {
+      mode = "single";
+    }
+
+    if (blocker) {
+      break;
+    }
+
+    const hasPrice = fetchPriceScrapeHasPrice(baseline, variants);
+    const jsonLdOnly = fetchPriceIsJsonLdOnlyPrice(baseline);
+    if (hasPrice && jsonLdOnly && pass < 3) {
+      fpDebug(log, "jsonld_guest_price_retry", {
+        pass: pass + 1,
+        price: baseline.price || "",
+        reason: "wait_for_pricing_widget"
+      });
+      await waitForFetchPricePredicate(log, 10000, fetchPriceHasPricingWidget, "pricing_widget_wait");
+      await waitForFetchPriceStabilize(log, 7000);
+      continue;
+    }
+
+    const domSample = readFetchPriceDomPriceSample();
+    if (
+      hasPrice &&
+      domSample &&
+      fetchPriceMoneyKey(domSample) !== fetchPriceMoneyKey(baseline.price) &&
+      pass < 3
+    ) {
+      fpDebug(log, "dom_price_mismatch_retry", {
+        pass: pass + 1,
+        baselinePrice: baseline.price || "",
+        domPrice: domSample
+      });
+      await waitForFetchPriceStabilize(log, 4000);
+      continue;
+    }
+
+    if (hasPrice) {
+      break;
+    }
+    if (pass < 3) {
+      fpDebug(log, "empty_price_retry", { pass: pass + 1, nextWaitMs: 1200 });
+      await fetchPriceSleep(1200);
+    }
   }
 
   const hint = catalogNumberHint != null ? String(catalogNumberHint).trim() : "";

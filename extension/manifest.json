@@ -22,7 +22,11 @@
       ],
       "exclude_matches": [
         "*://app.quartzy.com/*",
-        "*://*.quartzy.com/*"
+        "*://*.quartzy.com/*",
+        "*://app.main.staging.qtz.sh/*",
+        "*://*.qtz.sh/*",
+        "*://app.qtdev.io/*",
+        "*://*.qtdev.io/*"
       ],
       "js": [
         "ExtractionService.js",
@@ -36,7 +40,14 @@
     },
     {
       "matches": [
-        "*://app.quartzy.com/*"
+        "*://app.quartzy.com/*",
+        "*://*.quartzy.com/*",
+        "*://app.main.staging.qtz.sh/*",
+        "*://*.qtz.sh/*",
+        "*://app.qtdev.io/*",
+        "*://*.qtdev.io/*",
+        "*://localhost/*",
+        "*://127.0.0.1/*"
       ],
       "js": [
         "featureFlags.js",

@@ -41,6 +41,9 @@ const tabNewRequest = document.getElementById("tabNewRequest");
 const tabDebug = document.getElementById("tabDebug");
 const debugContext = document.getElementById("debugContext");
 const debugFieldsEl = document.getElementById("debugFields");
+const captureDebugCopy = document.getElementById("captureDebugCopy");
+/** @type {object|null} */
+let lastCaptureDebugPayload = null;
 
 const FIELD_DEBUG_LABELS = {
   itemName: "Item name",
@@ -149,6 +152,7 @@ function formatDebugTimestamp(ts) {
  */
 function updateDebugView(data, tab) {
   if (!debugContext || !debugFieldsEl) return;
+  lastCaptureDebugPayload = null;
   if (!data || (tab && isQuartzyDomainUrl(tab.url))) {
     debugContext.textContent = "No debug data for this context (e.g. Quartzy app tab, or no capture).";
     debugFieldsEl.textContent = "";
@@ -171,6 +175,7 @@ function updateDebugView(data, tab) {
   debugContext.textContent = lines.join("\n");
   debugFieldsEl.textContent = "";
 
+  const fieldDebug = {};
   FIELDS.forEach((f) => {
     const block = document.createElement("div");
     block.className = "debug-section";
@@ -214,6 +219,18 @@ function updateDebugView(data, tab) {
     block.appendChild(p3);
     block.appendChild(p4);
     const hint = data.domHintSelectors && data.domHintSelectors[f];
+    const fieldEntry = {
+      value: isFilled(data, f) ? String(data[f]) : "",
+      fieldSource: rawSrc,
+      fieldSourceLabel: h.label,
+      heuristicProvenance:
+        data.heuristicProvenance && data.heuristicProvenance[f] != null
+          ? String(data.heuristicProvenance[f])
+          : null,
+      aiRefined: aiN,
+      domHint: hint || null
+    };
+    fieldDebug[f] = fieldEntry;
     if (hint && hint.selector) {
       const p5 = document.createElement("p");
       p5.className = "debug-p";
@@ -241,6 +258,14 @@ function updateDebugView(data, tab) {
     }
     debugFieldsEl.appendChild(block);
   });
+
+  lastCaptureDebugPayload = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    context: { vendor: v, url: u, capturePhase: phase, isLoading: loading },
+    fields: fieldDebug,
+    raw: data
+  };
 }
 
 function setPanelView(view) {
@@ -495,6 +520,9 @@ function showData(data, tab) {
   dataState.style.display = "block";
   updateStatusHeader(data, tab);
   updateRowBadges(data, tab);
+  if (typeof maybePrefillAtcFromCapture === "function") {
+    maybePrefillAtcFromCapture(data, tab);
+  }
   if (activePanelView === "debug") {
     updateDebugView(data, tab);
   }
@@ -1509,29 +1537,62 @@ function bodyToPayloadTemplate(raw) {
  * @param {Record<string,string>} headers
  * @returns {{ required: boolean, source: string, locator_key: string, header_name: string }|null}
  */
+function sanitizeCapturedHeaders(headers) {
+  const out = {};
+  const h = headers || {};
+  /* Drop auth/cookies and any CSRF header values — those go stale; replay refreshes from cookies. */
+  const skip =
+    /^(cookie|authorization|proxy-authorization|content-length|host|origin|referer|sec-|user-agent|accept-encoding|accept-language|connection|pragma|cache-control|x-csrf-token|x-xsrf-token|x-request-verification-token|requestverificationtoken|anti-forgery|x-anti-forgery)$/i;
+  Object.keys(h).forEach(function (k) {
+    if (skip.test(k)) return;
+    out[k] = h[k];
+  });
+  if (!out.Accept && !out.accept) out.Accept = "application/json";
+  return out;
+}
+
+/**
+ * Prefer cookie names that match how the site named the CSRF header.
+ * @param {string} headerName
+ * @returns {string[]}
+ */
+function csrfCookieCandidatesForHeader(headerName) {
+  const lower = String(headerName || "").toLowerCase();
+  if (lower.indexOf("xsrf") !== -1) {
+    return ["XSRF-TOKEN", "xsrf-token", "XSRF_TOKEN"];
+  }
+  if (lower.indexOf("requestverification") !== -1) {
+    return ["__RequestVerificationToken", "RequestVerificationToken"];
+  }
+  if (lower.indexOf("csrf") !== -1) {
+    return ["CSRF-TOKEN", "csrf-token", "_csrf", "CSRFToken", "XSRF-TOKEN", "xsrf-token"];
+  }
+  return ["XSRF-TOKEN", "CSRF-TOKEN", "csrf-token", "_csrf"];
+}
+
 function inferTokenExtraction(headers) {
   const h = headers || {};
   const keys = Object.keys(h);
   for (let i = 0; i < keys.length; i++) {
     const name = keys[i];
     if (CART_TOKEN_HEADER_RE.test(name)) {
-      const lower = name.toLowerCase();
-      let locator = "XSRF-TOKEN";
-      if (lower.indexOf("csrf") !== -1) locator = "csrf-token";
-      if (lower.indexOf("requestverification") !== -1) locator = "__RequestVerificationToken";
+      const candidates = csrfCookieCandidatesForHeader(name);
       return {
         required: true,
         source: "COOKIE",
-        locator_key: locator,
+        locator_key: candidates[0],
+        locator_keys: candidates,
         header_name: name
       };
     }
   }
+  /* No CSRF header seen in capture — still try common cookies on replay. */
   return {
     required: false,
     source: "COOKIE",
-    locator_key: "",
-    header_name: ""
+    locator_key: "XSRF-TOKEN",
+    locator_keys: ["XSRF-TOKEN", "CSRF-TOKEN", "csrf-token", "_csrf", "CSRFToken"],
+    header_name: "X-XSRF-TOKEN"
   };
 }
 
@@ -1549,22 +1610,6 @@ function urlToTemplate(url, samples) {
     }
   }
   return u;
-}
-
-/**
- * @param {Record<string,string>} headers
- * @returns {Record<string,string>}
- */
-function sanitizeCapturedHeaders(headers) {
-  const out = {};
-  const h = headers || {};
-  const skip = /^(cookie|authorization|proxy-authorization|content-length|host|origin|referer|sec-|user-agent|accept-encoding|accept-language|connection|pragma|cache-control)$/i;
-  Object.keys(h).forEach(function (k) {
-    if (skip.test(k)) return;
-    out[k] = h[k];
-  });
-  if (!out.Accept && !out.accept) out.Accept = "application/json";
-  return out;
 }
 
 /**
@@ -1813,6 +1858,7 @@ function saveCartDraftConfig() {
     chrome.storage.local.set({ [CART_CONFIGS_KEY]: all }, function () {
       showToast("Saved add_to_cart config for " + cartDraftVendorId);
       refreshCartMapSavedNote(cartDraftVendorId);
+      if (typeof refreshAtcVendorDatalist === "function") refreshAtcVendorDatalist();
       setCartMapStatus("Saved to extension storage under vendor “" + cartDraftVendorId + "”.", "");
     });
   });
@@ -1884,12 +1930,23 @@ function updateCartMapToggleAvailability(data, tab) {
 
 function initCartMapUi() {
   if (!cartMapStandalone) return;
-  if (!isCartMappingEnabled()) {
+  const mappingOn = isCartMappingEnabled();
+  const atcOn = isAddToVendorTestEnabled();
+  if (!mappingOn && !atcOn) {
     cartMapStandalone.hidden = true;
     return;
   }
   cartMapStandalone.hidden = false;
-  if (cartMapModeToggle) {
+
+  if (!mappingOn) {
+    if (cartMapModeBar) cartMapModeBar.hidden = true;
+    const titles = cartMapStandalone.querySelectorAll(".cart-map-title");
+    const subs = cartMapStandalone.querySelectorAll(".cart-map-sub");
+    if (titles[0]) titles[0].hidden = true;
+    if (subs[0]) subs[0].hidden = true;
+  }
+
+  if (mappingOn && cartMapModeToggle) {
     cartMapModeToggle.addEventListener("change", function () {
       setCartMappingMode(!!cartMapModeToggle.checked);
     });
@@ -1900,7 +1957,10 @@ function initCartMapUi() {
   if (cartMapClearBtn) {
     cartMapClearBtn.addEventListener("click", function () {
       clearCartCaptures();
-      setCartMapStatus(cartMappingMode ? "Listening… click Add to cart on the page." : "", cartMappingMode ? "loading" : "");
+      setCartMapStatus(
+        cartMappingMode ? "Listening… click Add to cart on the page." : "",
+        cartMappingMode ? "loading" : ""
+      );
     });
   }
   if (cartMapCopyJson) {
@@ -1908,9 +1968,287 @@ function initCartMapUi() {
       void copyCartDraftJson();
     });
   }
+  initAtcTestUi();
+}
+
+function isAddToVendorTestEnabled() {
+  return (
+    typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" &&
+    QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true
+  );
+}
+
+const atcTestSection = document.getElementById("atcTestSection");
+const atcVendorIdEl = document.getElementById("atcVendorId");
+const atcVendorIdList = document.getElementById("atcVendorIdList");
+const atcSkuEl = document.getElementById("atcSku");
+const atcQtyEl = document.getElementById("atcQty");
+const atcRunBtn = document.getElementById("atcRunBtn");
+const atcStatus = document.getElementById("atcStatus");
+const atcDebug = document.getElementById("atcDebug");
+const atcDebugBody = document.getElementById("atcDebugBody");
+const atcDebugToggle = document.getElementById("atcDebugToggle");
+const atcDebugSummary = document.getElementById("atcDebugSummary");
+const atcDebugPre = document.getElementById("atcDebugPre");
+const atcCopyDebug = document.getElementById("atcCopyDebug");
+let atcInFlight = false;
+let atcDebugOpen = false;
+/** @type {object|null} */
+let lastAtcDebug = null;
+
+function setAtcDebugExpanded(open) {
+  atcDebugOpen = !!open;
+  if (atcDebug) atcDebug.classList.toggle("is-open", atcDebugOpen);
+  if (atcDebugBody) atcDebugBody.hidden = !atcDebugOpen;
+  if (atcDebugToggle) {
+    atcDebugToggle.setAttribute("aria-expanded", atcDebugOpen ? "true" : "false");
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {'loading'|'error'|'warn'|''} [kind]
+ */
+function setAtcStatus(text, kind) {
+  if (!atcStatus) return;
+  if (!text) {
+    atcStatus.hidden = true;
+    atcStatus.textContent = "";
+    atcStatus.className = "fetch-price-status";
+    return;
+  }
+  atcStatus.hidden = false;
+  atcStatus.textContent = text;
+  atcStatus.className =
+    "fetch-price-status" +
+    (kind === "error"
+      ? " is-error"
+      : kind === "warn"
+        ? " is-warn"
+        : kind === "loading"
+          ? " is-loading"
+          : "");
+}
+
+/**
+ * @param {object|null|undefined} result
+ */
+function renderAtcDebug(result) {
+  if (!atcDebug || !atcDebugPre) return;
+  if (!result) {
+    lastAtcDebug = null;
+    atcDebug.hidden = true;
+    atcDebugPre.textContent = "";
+    if (atcDebugSummary) atcDebugSummary.textContent = "";
+    return;
+  }
+  const bundle = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    outcome: {
+      ok: !!result.ok,
+      error: result.error || null,
+      errorMessage: result.errorMessage || null,
+      status: result.status != null ? result.status : null,
+      vendorId: result.vendorId || null,
+      sku: result.sku || null,
+      qty: result.qty || null,
+      url: result.url || null,
+      method: result.method || null,
+      tokenCookie: result.tokenCookie || null
+    },
+    responseBody: result.responseBody || result.responsePreview || null,
+    debug: result.debug || null,
+    raw: result
+  };
+  lastAtcDebug = bundle;
+  atcDebug.hidden = false;
+  setAtcDebugExpanded(false);
+  try {
+    atcDebugPre.textContent = JSON.stringify(bundle, null, 2);
+  } catch (e) {
+    atcDebugPre.textContent = String(bundle);
+  }
+  if (atcDebugSummary) {
+    const lines = [
+      "ok: " + String(!!result.ok),
+      "status: " + (result.status != null ? result.status : "—"),
+      "vendor: " + (result.vendorId || "—"),
+      "sku: " + (result.sku || "—"),
+      "token cookie: " + (result.tokenCookie || "—"),
+      "url: " + (result.url || "—")
+    ];
+    if (result.errorMessage) lines.push("error: " + result.errorMessage);
+    if (result.responsePreview) {
+      lines.push(
+        "response: " + String(result.responsePreview).replace(/\s+/g, " ").trim().slice(0, 180)
+      );
+    }
+    atcDebugSummary.textContent = lines.join("\n");
+  }
+}
+
+function refreshAtcVendorDatalist() {
+  if (!atcVendorIdList) return;
+  chrome.storage.local.get([CART_CONFIGS_KEY], function (result) {
+    const all = (result && result[CART_CONFIGS_KEY]) || {};
+    atcVendorIdList.innerHTML = "";
+    Object.keys(all)
+      .sort()
+      .forEach(function (id) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        atcVendorIdList.appendChild(opt);
+      });
+  });
+}
+
+/**
+ * Prefill ATC test fields from the active product capture (non-destructive if user typed).
+ * @param {object|null|undefined} data
+ * @param {chrome.tabs.Tab|null|undefined} tab
+ */
+function maybePrefillAtcFromCapture(data, tab) {
+  if (!isAddToVendorTestEnabled() || !data) return;
+  if (atcSkuEl && !String(atcSkuEl.value || "").trim() && isFilled(data, "catalogNumber")) {
+    atcSkuEl.value = String(data.catalogNumber).trim();
+  }
+  if (atcVendorIdEl && !String(atcVendorIdEl.value || "").trim()) {
+    const host = (data && data.vendor) || (tab && tab.url ? hostnameFromUrl(tab.url) : "");
+    const vid = vendorIdFromHost(host);
+    if (vid && vid !== "unknown") atcVendorIdEl.value = vid;
+  }
+}
+
+/**
+ * @param {string} url
+ * @returns {string}
+ */
+function hostnameFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (e) {
+    return "";
+  }
+}
+
+function copyTextToClipboard(text, okToast, failToast) {
+  const done = function (ok) {
+    showToast(ok ? okToast || "Copied" : failToast || "Could not copy");
+  };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    navigator.clipboard.writeText(text).then(
+      function () {
+        done(true);
+      },
+      function () {
+        fallbackCopyText(text, done);
+      }
+    );
+  } else {
+    fallbackCopyText(text, done);
+  }
+}
+
+function onAtcRunClick() {
+  if (atcInFlight || !atcRunBtn) return;
+  const vendorId = atcVendorIdEl ? String(atcVendorIdEl.value || "").trim().toLowerCase() : "";
+  const sku = atcSkuEl ? String(atcSkuEl.value || "").trim() : "";
+  const qty = atcQtyEl ? String(atcQtyEl.value || "1").trim() || "1" : "1";
+  if (!vendorId) {
+    setAtcStatus("Enter a vendor id (e.g. fisher).", "error");
+    return;
+  }
+  if (!sku) {
+    setAtcStatus("Enter a catalog / SKU.", "error");
+    return;
+  }
+  atcInFlight = true;
+  atcRunBtn.disabled = true;
+  setAtcStatus("Calling vendor cart API…", "loading");
+  renderAtcDebug(null);
+
+  chrome.runtime.sendMessage(
+    { type: "ADD_TO_VENDOR_CART", vendorId: vendorId, sku: sku, qty: qty },
+    function (response) {
+      atcInFlight = false;
+      atcRunBtn.disabled = false;
+      if (chrome.runtime.lastError) {
+        const err = {
+          ok: false,
+          error: "extension",
+          errorMessage: chrome.runtime.lastError.message || "Messaging failed"
+        };
+        setAtcStatus(err.errorMessage, "error");
+        renderAtcDebug(err);
+        return;
+      }
+      const result = response || { ok: false, error: "empty", errorMessage: "No response" };
+      renderAtcDebug(result);
+      if (result.ok) {
+        setAtcStatus(
+          "Added to vendor cart (HTTP " + (result.status != null ? result.status : "ok") + ").",
+          ""
+        );
+      } else {
+        setAtcStatus(result.errorMessage || result.error || "Add to cart failed", "error");
+      }
+    }
+  );
+}
+
+function initAtcTestUi() {
+  if (!atcTestSection) return;
+  if (!isAddToVendorTestEnabled()) {
+    atcTestSection.hidden = true;
+    return;
+  }
+  atcTestSection.hidden = false;
+  refreshAtcVendorDatalist();
+  if (atcRunBtn) atcRunBtn.addEventListener("click", onAtcRunClick);
+  if (atcDebugToggle) {
+    atcDebugToggle.addEventListener("click", function () {
+      setAtcDebugExpanded(!atcDebugOpen);
+    });
+  }
+  if (atcCopyDebug) {
+    atcCopyDebug.addEventListener("click", function () {
+      if (!lastAtcDebug) {
+        showToast("No add-to-cart debug yet. Run Add to cart first.");
+        return;
+      }
+      let text;
+      try {
+        text = JSON.stringify(lastAtcDebug, null, 2);
+      } catch (e) {
+        text = String(lastAtcDebug);
+      }
+      copyTextToClipboard(text, "Add-to-cart debug JSON copied", "Could not copy debug JSON");
+    });
+  }
+  setAtcDebugExpanded(false);
+}
+
+function initDebugCopyButtons() {
+  if (captureDebugCopy) {
+    captureDebugCopy.addEventListener("click", function () {
+      if (!lastCaptureDebugPayload) {
+        showToast("No capture debug to copy yet.");
+        return;
+      }
+      let text;
+      try {
+        text = JSON.stringify(lastCaptureDebugPayload, null, 2);
+      } catch (e) {
+        text = String(lastCaptureDebugPayload);
+      }
+      copyTextToClipboard(text, "Capture debug copied", "Could not copy capture debug");
+    });
+  }
 }
 
 initCartMapUi();
+initDebugCopyButtons();
 
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "UPDATE_SIDE_PANEL" && message.tabId != null && message.data) {
