@@ -846,15 +846,35 @@ const fetchPriceLoginBadge = document.getElementById("fetchPriceLoginBadge");
 const fetchPriceStatus = document.getElementById("fetchPriceStatus");
 const fetchPriceResult = document.getElementById("fetchPriceResult");
 const fetchPriceDebug = document.getElementById("fetchPriceDebug");
+const fetchPriceDebugBody = document.getElementById("fetchPriceDebugBody");
+const fetchPriceDebugToggle = document.getElementById("fetchPriceDebugToggle");
 const fetchPriceDebugSummary = document.getElementById("fetchPriceDebugSummary");
 const fetchPriceDebugPre = document.getElementById("fetchPriceDebugPre");
 const fetchPriceCopyDebug = document.getElementById("fetchPriceCopyDebug");
 let fetchPriceInFlight = false;
 /** @type {object|null} */
 let lastFetchPriceDebug = null;
+/** Last successful/attempted product page URL used for Fetch Price (for sibling SKU URL rewrite). */
+let lastFetchPricePageUrl = "";
+/** Catalog # of the priced/selected row from the last result (helps rewrite URLs). */
+let lastFetchPriceSelectedCatalog = "";
+let fetchPriceDebugOpen = false;
 
 function isFetchPriceTestEnabled() {
   return typeof QUARTZY_FETCH_PRICE_TEST_ENABLED !== "undefined" && QUARTZY_FETCH_PRICE_TEST_ENABLED === true;
+}
+
+function setFetchPriceDebugExpanded(open) {
+  fetchPriceDebugOpen = !!open;
+  if (fetchPriceDebug) {
+    fetchPriceDebug.classList.toggle("is-open", fetchPriceDebugOpen);
+  }
+  if (fetchPriceDebugBody) {
+    fetchPriceDebugBody.hidden = !fetchPriceDebugOpen;
+  }
+  if (fetchPriceDebugToggle) {
+    fetchPriceDebugToggle.setAttribute("aria-expanded", fetchPriceDebugOpen ? "true" : "false");
+  }
 }
 
 function initFetchPriceUi() {
@@ -872,6 +892,12 @@ function initFetchPriceUi() {
   if (fetchPriceCopyDebug) {
     fetchPriceCopyDebug.addEventListener("click", onCopyFetchPriceDebug);
   }
+  if (fetchPriceDebugToggle) {
+    fetchPriceDebugToggle.addEventListener("click", function () {
+      setFetchPriceDebugExpanded(!fetchPriceDebugOpen);
+    });
+  }
+  setFetchPriceDebugExpanded(false);
   setFetchPriceLoginBadge("unknown");
 }
 
@@ -890,6 +916,7 @@ function renderFetchPriceDebug(debug, result) {
   }
   lastFetchPriceDebug = debug;
   fetchPriceDebug.hidden = false;
+  setFetchPriceDebugExpanded(false);
   try {
     fetchPriceDebugPre.textContent = JSON.stringify(debug, null, 2);
   } catch (e) {
@@ -1021,6 +1048,121 @@ function setFetchPriceStatus(text, kind) {
 }
 
 /**
+ * Build a sibling product URL by swapping catalog/SKU in the path or query.
+ * Covers Thermo `/order/catalog/product/{SKU}` and similar path-segment patterns.
+ * @param {string} baseUrl
+ * @param {string} fromCatalog - currently loaded SKU (optional but preferred)
+ * @param {string} toCatalog
+ * @param {string[]} [knownCatalogs] - other catalogs from the variant list (path segment match)
+ * @returns {string|null}
+ */
+function buildVariantProductUrl(baseUrl, fromCatalog, toCatalog, knownCatalogs) {
+  if (!baseUrl || !toCatalog) return null;
+  const to = String(toCatalog).trim();
+  if (!to) return null;
+  const from = fromCatalog != null ? String(fromCatalog).trim() : "";
+  try {
+    const u = new URL(baseUrl);
+    const path = u.pathname;
+
+    if (from && from.toLowerCase() !== to.toLowerCase()) {
+      if (path.indexOf(from) !== -1) {
+        u.pathname = path.split(from).join(to);
+        return u.href;
+      }
+      const keys = ["sku", "catalog", "catalogNumber", "catalog_number", "productId", "product_id", "id"];
+      for (let i = 0; i < keys.length; i++) {
+        if (u.searchParams.has(keys[i]) && String(u.searchParams.get(keys[i])) === from) {
+          u.searchParams.set(keys[i], to);
+          return u.href;
+        }
+      }
+    }
+
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length) {
+      const last = parts[parts.length - 1];
+      const catalogs = Array.isArray(knownCatalogs) ? knownCatalogs : [];
+      const lastIsKnown =
+        catalogs.some(function (c) {
+          return c && String(c).toLowerCase() === String(last).toLowerCase();
+        }) || /^[A-Z0-9][A-Z0-9._-]{2,40}$/i.test(last);
+      if (lastIsKnown) {
+        parts[parts.length - 1] = to;
+        u.pathname = "/" + parts.join("/");
+        return u.href;
+      }
+    }
+
+    /* Thermo-style: …/product/{SKU} even if last segment didn't match heuristics */
+    const productIdx = parts.map(function (p) {
+      return p.toLowerCase();
+    }).indexOf("product");
+    if (productIdx >= 0 && productIdx < parts.length - 1) {
+      parts[productIdx + 1] = to;
+      u.pathname = "/" + parts.join("/");
+      return u.href;
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * @param {object} result
+ */
+function rememberFetchPriceContext(result) {
+  const pageUrl =
+    (result && (result.pageUrl || result.url)) ||
+    (result && result.debug && result.debug.request && result.debug.request.url) ||
+    (fetchPriceUrlEl && fetchPriceUrlEl.value) ||
+    "";
+  if (pageUrl) {
+    lastFetchPricePageUrl = String(pageUrl);
+  }
+  const variants = (result && Array.isArray(result.variants) && result.variants) || [];
+  let selected = "";
+  for (let i = 0; i < variants.length; i++) {
+    if (variants[i].isSelected || variants[i].isSuggestedMatch) {
+      selected = variants[i].catalogNumber || "";
+      if (selected) break;
+    }
+  }
+  if (!selected && result && result.baseline && result.baseline.catalogNumber) {
+    selected = result.baseline.catalogNumber;
+  }
+  lastFetchPriceSelectedCatalog = selected ? String(selected) : "";
+}
+
+/**
+ * @param {string} catalogNumber
+ * @param {string[]} knownCatalogs
+ */
+function fetchPriceForVariantCatalog(catalogNumber, knownCatalogs) {
+  const cat = String(catalogNumber || "").trim();
+  if (!cat) {
+    setFetchPriceStatus("That row has no catalog number to fetch.", "error");
+    return;
+  }
+  const base =
+    lastFetchPricePageUrl ||
+    (fetchPriceUrlEl ? String(fetchPriceUrlEl.value || "").trim() : "");
+  const nextUrl = buildVariantProductUrl(base, lastFetchPriceSelectedCatalog, cat, knownCatalogs);
+  if (!nextUrl) {
+    setFetchPriceStatus(
+      "Could not derive a product URL for " + cat + " from " + (base || "(no base URL)") + ".",
+      "error"
+    );
+    return;
+  }
+  if (fetchPriceUrlEl) fetchPriceUrlEl.value = nextUrl;
+  if (fetchPriceCatalogEl) fetchPriceCatalogEl.value = cat;
+  setFetchPriceStatus("Fetching " + cat + "…", "loading");
+  runFetchPriceRequest(nextUrl, cat);
+}
+
+/**
  * @param {object} result
  */
 function renderFetchPriceResult(result) {
@@ -1031,6 +1173,7 @@ function renderFetchPriceResult(result) {
     return;
   }
   fetchPriceResult.hidden = false;
+  rememberFetchPriceContext(result);
 
   if (result.loginState === "logged_out" && result.ok) {
     const warn = document.createElement("p");
@@ -1041,6 +1184,14 @@ function renderFetchPriceResult(result) {
 
   const variants = Array.isArray(result.variants) ? result.variants : [];
   const mode = result.mode === "list" && variants.length > 1 ? "list" : "single";
+  const knownCatalogs = variants
+    .map(function (v) {
+      return v && v.catalogNumber ? String(v.catalogNumber) : "";
+    })
+    .filter(Boolean);
+  const baseForClicks =
+    lastFetchPricePageUrl ||
+    (fetchPriceUrlEl ? String(fetchPriceUrlEl.value || "").trim() : "");
 
   if (mode === "single") {
     const v = variants[0] || {};
@@ -1049,8 +1200,7 @@ function renderFetchPriceResult(result) {
     const price = isNonEmptyTrim(v.price) ? v.price : "—";
     const unit = isNonEmptyTrim(v.unitSize) ? " / " + v.unitSize : "";
     const cat = isNonEmptyTrim(v.catalogNumber) ? " · " + v.catalogNumber : "";
-    const src = v.priceSource ? "  [" + v.priceSource + "]" : "";
-    p.textContent = price + unit + cat + src;
+    p.textContent = price + unit + cat;
     fetchPriceResult.appendChild(p);
   } else {
     const wrap = document.createElement("div");
@@ -1059,7 +1209,7 @@ function renderFetchPriceResult(result) {
     table.className = "fetch-price-table";
     const thead = document.createElement("thead");
     const hr = document.createElement("tr");
-    ["Label", "Catalog #", "Price", "Unit", "Source"].forEach(function (h) {
+    ["Label", "Catalog #", "Price", "Unit"].forEach(function (h) {
       const th = document.createElement("th");
       th.textContent = h;
       hr.appendChild(th);
@@ -1067,20 +1217,35 @@ function renderFetchPriceResult(result) {
     thead.appendChild(hr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
+    let clickableCount = 0;
     variants.forEach(function (v) {
       const tr = document.createElement("tr");
       if (v && (v.isSuggestedMatch || v.isSelected)) {
         tr.classList.add("is-suggested");
       }
-      const labelText =
-        (v.label || "") + (v.isSelected ? " · selected" : v.isSuggestedMatch ? " · match" : "");
-      const cells = [
-        labelText,
-        v.catalogNumber || "",
-        v.price || "—",
-        v.unitSize || "",
-        v.priceSource || ""
-      ];
+      const cat = v && v.catalogNumber ? String(v.catalogNumber).trim() : "";
+      const siblingUrl = cat
+        ? buildVariantProductUrl(baseForClicks, lastFetchPriceSelectedCatalog, cat, knownCatalogs)
+        : null;
+      if (siblingUrl && cat) {
+        tr.classList.add("is-clickable");
+        tr.title = "Fetch price for " + cat;
+        tr.setAttribute("role", "button");
+        tr.tabIndex = 0;
+        clickableCount += 1;
+        const go = function () {
+          if (fetchPriceInFlight) return;
+          fetchPriceForVariantCatalog(cat, knownCatalogs);
+        };
+        tr.addEventListener("click", go);
+        tr.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            go();
+          }
+        });
+      }
+      const cells = [v.label || "", v.catalogNumber || "", v.price || "—", v.unitSize || ""];
       cells.forEach(function (c) {
         const td = document.createElement("td");
         td.textContent = c;
@@ -1091,19 +1256,25 @@ function renderFetchPriceResult(result) {
     table.appendChild(tbody);
     wrap.appendChild(table);
     fetchPriceResult.appendChild(wrap);
+    if (clickableCount) {
+      const hint = document.createElement("p");
+      hint.className = "fetch-price-table-hint";
+      hint.textContent =
+        "Click a row to open that catalog #’s product URL and fetch its price (same URL pattern, SKU swapped).";
+      fetchPriceResult.appendChild(hint);
+    }
   }
 
   renderFetchPriceDebug(result.debug || null, result);
 }
 
-function onFetchPriceClick() {
+/**
+ * @param {string} url
+ * @param {string} [catalogNumber]
+ */
+function runFetchPriceRequest(url, catalogNumber) {
   if (fetchPriceInFlight || !fetchPriceBtn) return;
-  const url = fetchPriceUrlEl ? String(fetchPriceUrlEl.value || "").trim() : "";
-  const catalogNumber = fetchPriceCatalogEl ? String(fetchPriceCatalogEl.value || "").trim() : "";
-  if (!url) {
-    setFetchPriceStatus("Enter a product URL.", "error");
-    return;
-  }
+  const cat = catalogNumber != null ? String(catalogNumber).trim() : "";
   fetchPriceInFlight = true;
   fetchPriceBtn.disabled = true;
   setFetchPriceStatus("Opening background tab and scraping…", "loading");
@@ -1113,9 +1284,10 @@ function onFetchPriceClick() {
     fetchPriceResult.textContent = "";
   }
   renderFetchPriceDebug(null);
+  lastFetchPricePageUrl = url;
 
   chrome.runtime.sendMessage(
-    { type: "FETCH_PRICE_REQUEST", url: url, catalogNumber: catalogNumber || undefined },
+    { type: "FETCH_PRICE_REQUEST", url: url, catalogNumber: cat || undefined },
     function (response) {
       fetchPriceInFlight = false;
       fetchPriceBtn.disabled = false;
@@ -1125,7 +1297,7 @@ function onFetchPriceClick() {
         renderFetchPriceDebug({
           version: 1,
           generatedAt: new Date().toISOString(),
-          request: { url: url, catalogNumber: catalogNumber },
+          request: { url: url, catalogNumber: cat },
           outcome: {
             ok: false,
             error: "runtime_lastError",
@@ -1166,6 +1338,17 @@ function onFetchPriceClick() {
       renderFetchPriceResult(result);
     }
   );
+}
+
+function onFetchPriceClick() {
+  if (fetchPriceInFlight || !fetchPriceBtn) return;
+  const url = fetchPriceUrlEl ? String(fetchPriceUrlEl.value || "").trim() : "";
+  const catalogNumber = fetchPriceCatalogEl ? String(fetchPriceCatalogEl.value || "").trim() : "";
+  if (!url) {
+    setFetchPriceStatus("Enter a product URL.", "error");
+    return;
+  }
+  runFetchPriceRequest(url, catalogNumber);
 }
 
 initFetchPriceUi();

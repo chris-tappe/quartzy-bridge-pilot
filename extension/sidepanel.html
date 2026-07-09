@@ -648,20 +648,59 @@
     .fetch-price-table tr.is-suggested td:first-child {
       box-shadow: inset 3px 0 0 var(--quartzy-orange);
     }
+    .fetch-price-table tr.is-clickable {
+      cursor: pointer;
+    }
+    .fetch-price-table tr.is-clickable:hover {
+      background: #eff6ff;
+    }
+    .fetch-price-table tr.is-clickable.is-suggested:hover {
+      background: #fde7da;
+    }
+    .fetch-price-table-hint {
+      margin: 6px 0 0 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
     .fetch-price-result[hidden] { display: none !important; }
     .fetch-price-debug {
       margin-top: 12px;
       padding-top: 10px;
       border-top: 1px dashed #e5e7eb;
     }
-    .fetch-price-debug-h {
+    .fetch-price-debug-toggle {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: none;
+      background: none;
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .fetch-price-debug-toggle .debug-kicker { margin: 0; }
+    .fetch-price-debug-chevron {
+      font-size: 10px;
+      color: var(--muted);
+      transition: transform 0.15s ease;
+    }
+    .fetch-price-debug.is-open .fetch-price-debug-chevron {
+      transform: rotate(180deg);
+    }
+    .fetch-price-debug-body {
+      margin-top: 8px;
+    }
+    .fetch-price-debug-body[hidden] { display: none !important; }
+    .fetch-price-debug-actions {
+      display: flex;
+      justify-content: flex-end;
       margin-bottom: 6px;
     }
-    .fetch-price-debug-h .debug-kicker { margin: 0; }
     .fetch-price-copy-btn {
       flex-shrink: 0;
       padding: 4px 8px;
@@ -723,12 +762,17 @@
       <p class="fetch-price-status" id="fetchPriceStatus" hidden></p>
       <div class="fetch-price-result" id="fetchPriceResult" hidden></div>
       <div class="fetch-price-debug" id="fetchPriceDebug" hidden>
-        <div class="fetch-price-debug-h">
-          <p class="debug-kicker">Debug log</p>
-          <button type="button" class="fetch-price-copy-btn" id="fetchPriceCopyDebug">Copy debug JSON</button>
+        <button type="button" class="fetch-price-debug-toggle" id="fetchPriceDebugToggle" aria-expanded="false" aria-controls="fetchPriceDebugBody">
+          <span class="debug-kicker">Debug log</span>
+          <span class="fetch-price-debug-chevron" aria-hidden="true">▼</span>
+        </button>
+        <div class="fetch-price-debug-body" id="fetchPriceDebugBody" hidden>
+          <div class="fetch-price-debug-actions">
+            <button type="button" class="fetch-price-copy-btn" id="fetchPriceCopyDebug">Copy debug JSON</button>
+          </div>
+          <p class="fetch-price-debug-summary" id="fetchPriceDebugSummary"></p>
+          <pre class="fetch-price-debug-pre" id="fetchPriceDebugPre" aria-label="Fetch price debug JSON"></pre>
         </div>
-        <p class="fetch-price-debug-summary" id="fetchPriceDebugSummary"></p>
-        <pre class="fetch-price-debug-pre" id="fetchPriceDebugPre" aria-label="Fetch price debug JSON"></pre>
       </div>
     </div>
   </div>

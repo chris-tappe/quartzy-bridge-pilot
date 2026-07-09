@@ -39,6 +39,7 @@
         "*://app.quartzy.com/*"
       ],
       "js": [
+        "featureFlags.js",
         "quartzy_script.js"
       ],
       "run_at": "document_idle"
