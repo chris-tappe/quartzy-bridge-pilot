@@ -2561,3 +2561,97 @@ function qzcNodeMayAddJsonLd(n) {
   }
   return false;
 }
+
+/* —— Cart API mapping: page-world fetch/XHR hook bridge —— */
+const QZC_CART_HOOK_SOURCE = "quartzy-cart-hook";
+const QZC_CART_HOOK_SCRIPT_ID = "quartzy-cart-capture-hook";
+let qzcCartHookInjected = false;
+let qzcCartMappingActive = false;
+
+function qzcEnsureCartCaptureHook(onReady) {
+  if (document.getElementById(QZC_CART_HOOK_SCRIPT_ID)) {
+    qzcCartHookInjected = true;
+    if (typeof onReady === "function") onReady();
+    return true;
+  }
+  try {
+    const s = document.createElement("script");
+    s.id = QZC_CART_HOOK_SCRIPT_ID;
+    s.src = chrome.runtime.getURL("cartCaptureHook.js");
+    s.async = false;
+    s.onload = function () {
+      qzcCartHookInjected = true;
+      if (typeof onReady === "function") onReady();
+    };
+    s.onerror = function () {
+      console.log("[Quartzy Connect] cart hook script failed to load");
+      if (typeof onReady === "function") onReady(false);
+    };
+    (document.documentElement || document.head || document.body).appendChild(s);
+    return true;
+  } catch (e) {
+    console.log("[Quartzy Connect] cart hook inject failed:", e && e.message);
+    if (typeof onReady === "function") onReady(false);
+    return false;
+  }
+}
+
+function qzcSetCartMappingActive(on) {
+  qzcCartMappingActive = !!on;
+  function sendCmd() {
+    try {
+      window.postMessage(
+        {
+          source: QZC_CART_HOOK_SOURCE,
+          type: "QUARTZY_CART_HOOK_CMD",
+          payload: { active: qzcCartMappingActive }
+        },
+        "*"
+      );
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  if (qzcCartHookInjected || document.getElementById(QZC_CART_HOOK_SCRIPT_ID)) {
+    qzcCartHookInjected = true;
+    sendCmd();
+  } else {
+    qzcEnsureCartCaptureHook(function () {
+      sendCmd();
+      /* Re-send shortly in case the page hook registered after first postMessage. */
+      setTimeout(sendCmd, 50);
+    });
+  }
+  return qzcCartMappingActive;
+}
+
+window.addEventListener("message", function (event) {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== QZC_CART_HOOK_SOURCE) return;
+  if (data.type === "QUARTZY_CART_HOOK_CAPTURE" && data.payload && qzcCartMappingActive) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "CART_MAPPING_CAPTURE",
+        payload: data.payload,
+        pageUrl: location.href,
+        pageHost: location.hostname
+      });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "CART_MAPPING_START") {
+    const ok = qzcSetCartMappingActive(true);
+    sendResponse({ success: ok, active: qzcCartMappingActive });
+    return;
+  }
+  if (message.type === "CART_MAPPING_STOP") {
+    qzcSetCartMappingActive(false);
+    sendResponse({ success: true, active: false });
+    return;
+  }
+});

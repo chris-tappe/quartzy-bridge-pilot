@@ -392,6 +392,9 @@ function updateRowBadges(data, tab) {
   if (!mappingOk && mappingMode) {
     setMappingMode(false);
   }
+  if (typeof updateCartMapToggleAvailability === "function") {
+    updateCartMapToggleAvailability(data, tab);
+  }
   if (lineQuantityEl) {
     lineQuantityEl.disabled = loading;
   }
@@ -1353,7 +1356,563 @@ function onFetchPriceClick() {
 
 initFetchPriceUi();
 
-chrome.runtime.onMessage.addListener((message) => {
+/* —— Cart API mapping mode (gated by QUARTZY_CART_MAPPING_ENABLED) —— */
+const CART_CONFIGS_KEY = "vendorCartConfigs";
+const cartMapStandalone = document.getElementById("cartMapStandalone");
+const cartMapModeBar = document.getElementById("cartMapModeBar");
+const cartMapModeToggle = document.getElementById("cartMapModeToggle");
+const cartMapModeHint = document.getElementById("cartMapModeHint");
+const cartMapStatus = document.getElementById("cartMapStatus");
+const cartMapCandidates = document.getElementById("cartMapCandidates");
+const cartMapPreview = document.getElementById("cartMapPreview");
+const cartMapPreviewPre = document.getElementById("cartMapPreviewPre");
+const cartMapCopyJson = document.getElementById("cartMapCopyJson");
+const cartMapSaveBtn = document.getElementById("cartMapSaveBtn");
+const cartMapClearBtn = document.getElementById("cartMapClearBtn");
+const cartMapSavedNote = document.getElementById("cartMapSavedNote");
+
+let cartMappingMode = false;
+let cartMappingTabId = null;
+/** @type {Array<object>} */
+let cartCaptures = [];
+/** @type {string|null} */
+let cartSelectedId = null;
+/** @type {object|null} */
+let cartDraftConfig = null;
+/** @type {string} */
+let cartDraftVendorId = "";
+/** @type {string} */
+let cartDraftHost = "";
+
+const CART_TOKEN_HEADER_RE =
+  /^(x-csrf-token|x-xsrf-token|x-request-verification-token|requestverificationtoken|anti-forgery|x-anti-forgery)$/i;
+const CART_SKU_KEY_RE = /^(sku|catalog|catalognumber|catalog_number|productcode|product_code|productid|product_id|itemnumber|item_number|partnumber|part_number|material|matnr|code)$/i;
+const CART_QTY_KEY_RE = /^(qty|quantity|qtyordered|orderqty|amount|count)$/i;
+
+function isCartMappingEnabled() {
+  return typeof QUARTZY_CART_MAPPING_ENABLED !== "undefined" && QUARTZY_CART_MAPPING_ENABLED === true;
+}
+
+/**
+ * @param {string|null|undefined} host
+ * @returns {string}
+ */
+function vendorIdFromHost(host) {
+  const h = String(host || "")
+    .toLowerCase()
+    .replace(/^www\./, "");
+  if (!h) return "unknown";
+  if (h.indexOf("fishersci") !== -1) return "fisher";
+  if (h.indexOf("thermofisher") !== -1) return "thermo";
+  if (h.indexOf("vwr") !== -1 || h.indexOf("avantorsciences") !== -1) return "vwr";
+  if (h.indexOf("sigmaaldrich") !== -1 || h.indexOf("milliporesigma") !== -1) return "sigma";
+  if (h.indexOf("abcam") !== -1) return "abcam";
+  if (h.indexOf("thomasci") !== -1) return "thomas";
+  const parts = h.split(".");
+  if (parts.length >= 2) return parts[parts.length - 2];
+  return parts[0] || "unknown";
+}
+
+/**
+ * @param {string} message
+ * @param {"info"|"error"|"warn"|"loading"|""} [kind]
+ */
+function setCartMapStatus(message, kind) {
+  if (!cartMapStatus) return;
+  if (!message) {
+    cartMapStatus.hidden = true;
+    cartMapStatus.textContent = "";
+    cartMapStatus.className = "fetch-price-status";
+    return;
+  }
+  cartMapStatus.hidden = false;
+  cartMapStatus.textContent = message;
+  cartMapStatus.className =
+    "fetch-price-status" +
+    (kind === "error"
+      ? " is-error"
+      : kind === "warn"
+        ? " is-warn"
+        : kind === "loading"
+          ? " is-loading"
+          : "");
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} path
+ * @param {{sku?: string, qty?: string}} out
+ */
+function walkTemplatePlaceholders(value, path, out) {
+  if (value == null) return value;
+  if (Array.isArray(value)) {
+    return value.map(function (v, i) {
+      return walkTemplatePlaceholders(v, path + "[" + i + "]", out);
+    });
+  }
+  if (typeof value === "object") {
+    const next = {};
+    Object.keys(value).forEach(function (k) {
+      next[k] = walkTemplatePlaceholders(value[k], path ? path + "." + k : k, out);
+    });
+    return next;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const key = path.split(".").pop() || "";
+    const bare = key.replace(/\[\d+\]/g, "");
+    if (CART_SKU_KEY_RE.test(bare) && !out.sku) {
+      out.sku = String(value);
+      return "{{SKU}}";
+    }
+    if (CART_QTY_KEY_RE.test(bare) && !out.qty) {
+      out.qty = String(value);
+      return "{{QTY}}";
+    }
+  }
+  return value;
+}
+
+/**
+ * @param {string} raw
+ * @returns {{ template: object|string, kind: string, samples: {sku?: string, qty?: string} }}
+ */
+function bodyToPayloadTemplate(raw) {
+  const text = String(raw || "").trim();
+  const samples = {};
+  if (!text) return { template: {}, kind: "empty", samples: samples };
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      template: walkTemplatePlaceholders(parsed, "", samples),
+      kind: "json",
+      samples: samples
+    };
+  } catch (e) {
+    /* form-urlencoded */
+  }
+  if (text.indexOf("=") !== -1) {
+    const params = new URLSearchParams(text);
+    const obj = {};
+    params.forEach(function (v, k) {
+      obj[k] = v;
+    });
+    return {
+      template: walkTemplatePlaceholders(obj, "", samples),
+      kind: "form",
+      samples: samples
+    };
+  }
+  return { template: { raw: text.slice(0, 2000) }, kind: "raw", samples: samples };
+}
+
+/**
+ * @param {Record<string,string>} headers
+ * @returns {{ required: boolean, source: string, locator_key: string, header_name: string }|null}
+ */
+function inferTokenExtraction(headers) {
+  const h = headers || {};
+  const keys = Object.keys(h);
+  for (let i = 0; i < keys.length; i++) {
+    const name = keys[i];
+    if (CART_TOKEN_HEADER_RE.test(name)) {
+      const lower = name.toLowerCase();
+      let locator = "XSRF-TOKEN";
+      if (lower.indexOf("csrf") !== -1) locator = "csrf-token";
+      if (lower.indexOf("requestverification") !== -1) locator = "__RequestVerificationToken";
+      return {
+        required: true,
+        source: "COOKIE",
+        locator_key: locator,
+        header_name: name
+      };
+    }
+  }
+  return {
+    required: false,
+    source: "COOKIE",
+    locator_key: "",
+    header_name: ""
+  };
+}
+
+/**
+ * @param {string} url
+ * @param {{sku?: string, qty?: string}} samples
+ * @returns {string}
+ */
+function urlToTemplate(url, samples) {
+  let u = String(url || "");
+  if (samples && samples.sku) {
+    const sku = String(samples.sku);
+    if (sku && u.indexOf(sku) !== -1) {
+      u = u.split(sku).join("{{SKU}}");
+    }
+  }
+  return u;
+}
+
+/**
+ * @param {Record<string,string>} headers
+ * @returns {Record<string,string>}
+ */
+function sanitizeCapturedHeaders(headers) {
+  const out = {};
+  const h = headers || {};
+  const skip = /^(cookie|authorization|proxy-authorization|content-length|host|origin|referer|sec-|user-agent|accept-encoding|accept-language|connection|pragma|cache-control)$/i;
+  Object.keys(h).forEach(function (k) {
+    if (skip.test(k)) return;
+    out[k] = h[k];
+  });
+  if (!out.Accept && !out.accept) out.Accept = "application/json";
+  return out;
+}
+
+/**
+ * @param {object} capture
+ * @param {string} vendorId
+ * @param {string} pageHost
+ * @returns {object}
+ */
+function buildAddToCartConfig(capture, vendorId, pageHost) {
+  const bodyText = (capture.requestBody && capture.requestBody.text) || "";
+  const payload = bodyToPayloadTemplate(bodyText);
+  const token = inferTokenExtraction(capture.requestHeaders || {});
+  const urlTemplate = urlToTemplate(capture.url, payload.samples);
+  const host = String(pageHost || "").replace(/^www\./, "");
+  const domainMatchers = host ? ["*://*." + host + "/*", "*://" + host + "/*"] : [];
+  const status = capture.status != null ? Number(capture.status) : 200;
+  const headers = sanitizeCapturedHeaders(capture.requestHeaders || {});
+  if (payload.kind === "form" || payload.kind === "formdata") {
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+  } else if (!headers["Content-Type"] && !headers["content-type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  const cfg = {
+    vendor_id: vendorId || "unknown",
+    domain_matchers: domainMatchers,
+    add_to_cart: {
+      enabled: true,
+      method: String(capture.method || "POST").toUpperCase(),
+      url_template: urlTemplate,
+      token_extraction: token,
+      headers: headers,
+      payload_template: payload.template,
+      success_indicator: {
+        status_code: status >= 200 && status < 300 ? status : 200,
+        json_path: "",
+        expected_value: true
+      },
+      _meta: {
+        capturedAt: capture.capturedAt || Date.now(),
+        transport: capture.transport || "fetch",
+        score: capture.score,
+        responsePreview: String(capture.responsePreview || "").slice(0, 500),
+        sampleSku: payload.samples.sku || null,
+        sampleQty: payload.samples.qty || null
+      }
+    },
+    throttling: {
+      concurrency_limit: 3,
+      min_jitter_ms: 500,
+      max_jitter_ms: 1500
+    }
+  };
+  return cfg;
+}
+
+function shortUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.pathname + u.search;
+  } catch (e) {
+    return String(url || "").slice(0, 120);
+  }
+}
+
+function renderCartCandidates() {
+  if (!cartMapCandidates) return;
+  if (!cartCaptures.length) {
+    cartMapCandidates.hidden = true;
+    cartMapCandidates.innerHTML = "";
+    return;
+  }
+  cartMapCandidates.hidden = false;
+  const sorted = cartCaptures.slice().sort(function (a, b) {
+    return (b.score || 0) - (a.score || 0);
+  });
+  cartMapCandidates.innerHTML = "";
+  sorted.slice(0, 8).forEach(function (c) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cart-map-candidate" + (c.id === cartSelectedId ? " is-selected" : "");
+    btn.dataset.captureId = c.id;
+    btn.innerHTML =
+      '<div class="cart-map-cand-top">' +
+      '<span class="cart-map-cand-method">' +
+      escapeHtml(c.method || "?") +
+      " · " +
+      escapeHtml(String(c.status != null ? c.status : "—")) +
+      "</span>" +
+      '<span class="cart-map-cand-score">score ' +
+      escapeHtml(String(c.score != null ? c.score : 0)) +
+      "</span></div>" +
+      '<div class="cart-map-cand-url">' +
+      escapeHtml(shortUrl(c.url)) +
+      "</div>" +
+      '<div class="cart-map-cand-meta">' +
+      escapeHtml(c.transport || "fetch") +
+      (c.durationMs != null ? " · " + c.durationMs + "ms" : "") +
+      "</div>";
+    btn.addEventListener("click", function () {
+      selectCartCapture(c.id);
+    });
+    cartMapCandidates.appendChild(btn);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * @param {string} id
+ */
+function selectCartCapture(id) {
+  cartSelectedId = id;
+  const cap = cartCaptures.find(function (c) {
+    return c.id === id;
+  });
+  renderCartCandidates();
+  if (!cap) {
+    cartDraftConfig = null;
+    if (cartMapPreview) cartMapPreview.hidden = true;
+    if (cartMapSaveBtn) cartMapSaveBtn.disabled = true;
+    return;
+  }
+  cartDraftConfig = buildAddToCartConfig(cap, cartDraftVendorId, cartDraftHost);
+  if (cartMapPreviewPre) {
+    try {
+      cartMapPreviewPre.textContent = JSON.stringify(cartDraftConfig, null, 2);
+    } catch (e) {
+      cartMapPreviewPre.textContent = String(cartDraftConfig);
+    }
+  }
+  if (cartMapPreview) cartMapPreview.hidden = false;
+  if (cartMapSaveBtn) cartMapSaveBtn.disabled = false;
+  setCartMapStatus("Selected candidate — review JSON, then Save or Copy.", "");
+}
+
+function clearCartCaptures() {
+  cartCaptures = [];
+  cartSelectedId = null;
+  cartDraftConfig = null;
+  if (cartMapCandidates) {
+    cartMapCandidates.hidden = true;
+    cartMapCandidates.innerHTML = "";
+  }
+  if (cartMapPreview) cartMapPreview.hidden = true;
+  if (cartMapSaveBtn) cartMapSaveBtn.disabled = true;
+  if (cartMapPreviewPre) cartMapPreviewPre.textContent = "";
+}
+
+/**
+ * @param {boolean} on
+ */
+function setCartMappingMode(on) {
+  if (!isCartMappingEnabled()) return;
+  if (on === cartMappingMode) {
+    if (cartMapModeToggle) cartMapModeToggle.checked = on;
+    return;
+  }
+  if (on) {
+    getActiveTabKey(function (tabId, tab) {
+      if (tabId == null || !tab || !isMappableContentUrl(tab.url) || isQuartzyDomainUrl(tab.url)) {
+        showToast("Open a vendor product page to start cart mapping.");
+        if (cartMapModeToggle) cartMapModeToggle.checked = false;
+        return;
+      }
+      chrome.tabs.sendMessage(tabId, { type: "CART_MAPPING_START" }, function (response) {
+        if (chrome.runtime.lastError || !response || !response.success) {
+          showToast("Could not start cart mapping on this page. Reload and try again.");
+          if (cartMapModeToggle) cartMapModeToggle.checked = false;
+          return;
+        }
+        cartMappingMode = true;
+        cartMappingTabId = tabId;
+        try {
+          cartDraftHost = new URL(tab.url).hostname;
+        } catch (e) {
+          cartDraftHost = "";
+        }
+        cartDraftVendorId = vendorIdFromHost(cartDraftHost);
+        clearCartCaptures();
+        if (cartMapModeBar) cartMapModeBar.classList.add("is-on");
+        if (cartMapModeHint) cartMapModeHint.hidden = false;
+        if (cartMapModeToggle) cartMapModeToggle.checked = true;
+        setCartMapStatus("Listening… click Add to cart on the page.", "loading");
+        refreshCartMapSavedNote(cartDraftVendorId);
+      });
+    });
+    return;
+  }
+  const prevTab = cartMappingTabId;
+  cartMappingMode = false;
+  cartMappingTabId = null;
+  if (cartMapModeBar) cartMapModeBar.classList.remove("is-on");
+  if (cartMapModeHint) cartMapModeHint.hidden = true;
+  if (cartMapModeToggle) cartMapModeToggle.checked = false;
+  if (prevTab != null) {
+    chrome.tabs.sendMessage(prevTab, { type: "CART_MAPPING_STOP" }, function () {
+      void chrome.runtime.lastError;
+    });
+  }
+  if (!cartCaptures.length) {
+    setCartMapStatus("", "");
+  } else {
+    setCartMapStatus("Capture stopped. Select a candidate below.", "");
+  }
+}
+
+/**
+ * @param {string} vendorId
+ */
+function refreshCartMapSavedNote(vendorId) {
+  if (!cartMapSavedNote) return;
+  chrome.storage.local.get([CART_CONFIGS_KEY], function (result) {
+    const all = result[CART_CONFIGS_KEY] || {};
+    const existing = vendorId && all[vendorId];
+    if (existing && existing.add_to_cart) {
+      cartMapSavedNote.hidden = false;
+      cartMapSavedNote.textContent =
+        "Saved config exists for “" +
+        vendorId +
+        "” (" +
+        (existing.add_to_cart.method || "?") +
+        " " +
+        shortUrl(existing.add_to_cart.url_template || "") +
+        "). Saving again will overwrite.";
+    } else {
+      cartMapSavedNote.hidden = true;
+      cartMapSavedNote.textContent = "";
+    }
+  });
+}
+
+function saveCartDraftConfig() {
+  if (!cartDraftConfig || !cartDraftVendorId) {
+    showToast("Select a captured request first.");
+    return;
+  }
+  chrome.storage.local.get([CART_CONFIGS_KEY], function (result) {
+    const all = result[CART_CONFIGS_KEY] && typeof result[CART_CONFIGS_KEY] === "object" ? result[CART_CONFIGS_KEY] : {};
+    all[cartDraftVendorId] = cartDraftConfig;
+    chrome.storage.local.set({ [CART_CONFIGS_KEY]: all }, function () {
+      showToast("Saved add_to_cart config for " + cartDraftVendorId);
+      refreshCartMapSavedNote(cartDraftVendorId);
+      setCartMapStatus("Saved to extension storage under vendor “" + cartDraftVendorId + "”.", "");
+    });
+  });
+}
+
+async function copyCartDraftJson() {
+  if (!cartDraftConfig) {
+    showToast("Nothing to copy yet.");
+    return;
+  }
+  const text = JSON.stringify(cartDraftConfig, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("Copied add_to_cart JSON");
+  } catch (e) {
+    showToast("Copy failed — select the JSON and copy manually.");
+  }
+}
+
+function onCartCaptureMessage(message, sender) {
+  if (!cartMappingMode) return;
+  if (!message || message.type !== "CART_MAPPING_CAPTURE" || !message.payload) return;
+  const tabId = sender && sender.tab && sender.tab.id;
+  if (cartMappingTabId != null && tabId != null && tabId !== cartMappingTabId) return;
+  const payload = message.payload;
+  if (!payload.id) return;
+  const existingIdx = cartCaptures.findIndex(function (c) {
+    return c.id === payload.id;
+  });
+  if (existingIdx >= 0) {
+    cartCaptures[existingIdx] = payload;
+  } else {
+    cartCaptures.push(payload);
+  }
+  if (cartCaptures.length > 24) {
+    cartCaptures = cartCaptures.slice(-24);
+  }
+  if (message.pageHost) {
+    cartDraftHost = String(message.pageHost);
+    cartDraftVendorId = vendorIdFromHost(cartDraftHost);
+  }
+  renderCartCandidates();
+  setCartMapStatus(cartCaptures.length + " request(s) captured — pick the cart call.", "");
+  if (!cartSelectedId && cartCaptures.length) {
+    const best = cartCaptures.slice().sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    })[0];
+    if (best && (best.score || 0) >= 70) {
+      selectCartCapture(best.id);
+    }
+  } else if (cartSelectedId) {
+    selectCartCapture(cartSelectedId);
+  }
+}
+
+function updateCartMapToggleAvailability(data, tab) {
+  if (!cartMapModeToggle) return;
+  const ok =
+    isCartMappingEnabled() &&
+    tab &&
+    isMappableContentUrl(tab.url) &&
+    !isQuartzyDomainUrl(tab.url) &&
+    !(data && data.isLoading === true);
+  cartMapModeToggle.disabled = !ok;
+  if (!ok && cartMappingMode) {
+    setCartMappingMode(false);
+  }
+}
+
+function initCartMapUi() {
+  if (!cartMapStandalone) return;
+  if (!isCartMappingEnabled()) {
+    cartMapStandalone.hidden = true;
+    return;
+  }
+  cartMapStandalone.hidden = false;
+  if (cartMapModeToggle) {
+    cartMapModeToggle.addEventListener("change", function () {
+      setCartMappingMode(!!cartMapModeToggle.checked);
+    });
+  }
+  if (cartMapSaveBtn) {
+    cartMapSaveBtn.addEventListener("click", saveCartDraftConfig);
+  }
+  if (cartMapClearBtn) {
+    cartMapClearBtn.addEventListener("click", function () {
+      clearCartCaptures();
+      setCartMapStatus(cartMappingMode ? "Listening… click Add to cart on the page." : "", cartMappingMode ? "loading" : "");
+    });
+  }
+  if (cartMapCopyJson) {
+    cartMapCopyJson.addEventListener("click", function () {
+      void copyCartDraftJson();
+    });
+  }
+}
+
+initCartMapUi();
+
+chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "UPDATE_SIDE_PANEL" && message.tabId != null && message.data) {
     getActiveTabKey((tabId, tab) => {
       if (tabId != null && tabId === message.tabId) {
@@ -1364,11 +1923,17 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "WAND_CAPTURED" && mappingMode && message.field === mappingField) {
     advanceMappingField();
   }
+  if (message.type === "CART_MAPPING_CAPTURE") {
+    onCartCaptureMessage(message, sender);
+  }
 });
 
 chrome.tabs.onActivated.addListener((info) => {
   if (mappingMode && info && info.tabId !== mappingTabId) {
     setMappingMode(false);
+  }
+  if (cartMappingMode && info && info.tabId !== cartMappingTabId) {
+    setCartMappingMode(false);
   }
   loadForActiveTab();
 });
@@ -1376,6 +1941,9 @@ chrome.tabs.onActivated.addListener((info) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (mappingMode && tabId === mappingTabId && (changeInfo.status === "loading" || changeInfo.url)) {
     setMappingMode(false);
+  }
+  if (cartMappingMode && tabId === cartMappingTabId && (changeInfo.status === "loading" || changeInfo.url)) {
+    setCartMappingMode(false);
   }
   if (changeInfo.status === "complete") {
     getActiveTabKey((activeId) => {
@@ -1389,6 +1957,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[REQUEST_LIST_KEY]) {
     const next = changes[REQUEST_LIST_KEY].newValue;
     renderRequestList(Array.isArray(next) ? next : []);
+  }
+  if (changes[CART_CONFIGS_KEY] && cartDraftVendorId) {
+    refreshCartMapSavedNote(cartDraftVendorId);
   }
   getActiveTabKey((tabId, tab) => {
     if (tabId == null) return;

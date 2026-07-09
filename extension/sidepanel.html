@@ -736,6 +736,114 @@
       color: #374151;
     }
     .fetch-price-debug[hidden] { display: none !important; }
+    .cart-map-block {
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    .cart-map-title {
+      margin: 0 0 4px 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: #111;
+    }
+    .cart-map-sub {
+      margin: 0 0 10px 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .cart-map-candidates {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .cart-map-candidate {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+      width: 100%;
+    }
+    .cart-map-candidate:hover { border-color: #93c5fd; background: #f8fbff; }
+    .cart-map-candidate.is-selected {
+      border-color: var(--quartzy-orange);
+      box-shadow: 0 0 0 2px rgba(247, 94, 45, 0.2);
+      background: #fff7f3;
+    }
+    .cart-map-cand-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .cart-map-cand-method {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent-blue);
+    }
+    .cart-map-cand-score {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .cart-map-cand-url {
+      font-size: 11px;
+      font-family: ui-monospace, Menlo, Monaco, monospace;
+      word-break: break-all;
+      color: #374151;
+      line-height: 1.35;
+    }
+    .cart-map-cand-meta {
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .cart-map-preview {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed #e5e7eb;
+    }
+    .cart-map-preview[hidden] { display: none !important; }
+    .cart-map-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .cart-map-btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent-blue);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .cart-map-btn:hover:not(:disabled) { background: var(--accent-blue-hover); }
+    .cart-map-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .cart-map-btn.secondary {
+      background: #eff6ff;
+      color: var(--accent-blue);
+      border: 1px solid #bfdbfe;
+    }
+    .cart-map-btn.secondary:hover:not(:disabled) { background: #dbeafe; }
+    .cart-map-saved {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #166534;
+      line-height: 1.4;
+    }
+    .cart-map-saved[hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -774,6 +882,37 @@
           <pre class="fetch-price-debug-pre" id="fetchPriceDebugPre" aria-label="Fetch price debug JSON"></pre>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="card debug-card" id="cartMapStandalone" hidden style="margin-bottom: 12px;">
+    <div class="cart-map-block" id="cartMapBlock" style="margin-bottom: 0; padding-bottom: 0; border-bottom: none;">
+      <h3 class="cart-map-title">Cart API mapping (dev)</h3>
+      <p class="cart-map-sub">On a vendor product page, turn this on, click the site’s Add to cart, then pick the captured request and save it as <code>add_to_cart</code> config.</p>
+      <div class="mapping-mode-bar" id="cartMapModeBar" style="margin-bottom: 0;">
+        <label class="toggle-switch" for="cartMapModeToggle">
+          <input type="checkbox" id="cartMapModeToggle" aria-describedby="cartMapModeHint" />
+          <span class="toggle-slider" aria-hidden="true"></span>
+          <span class="toggle-text">Cart mapping mode</span>
+        </label>
+        <p class="mapping-mode-hint" id="cartMapModeHint" hidden>
+          Listening for cart-like XHR/fetch on this tab. Click Add to cart on the page.
+        </p>
+      </div>
+      <p class="fetch-price-status" id="cartMapStatus" hidden style="margin-top: 10px;"></p>
+      <div class="cart-map-candidates" id="cartMapCandidates" hidden></div>
+      <div class="cart-map-preview" id="cartMapPreview" hidden>
+        <p class="debug-kicker">Draft add_to_cart config</p>
+        <div class="fetch-price-debug-actions">
+          <button type="button" class="fetch-price-copy-btn" id="cartMapCopyJson">Copy JSON</button>
+        </div>
+        <pre class="fetch-price-debug-pre" id="cartMapPreviewPre" aria-label="Draft add_to_cart JSON"></pre>
+        <div class="cart-map-actions">
+          <button type="button" class="cart-map-btn" id="cartMapSaveBtn" disabled>Save for vendor</button>
+          <button type="button" class="cart-map-btn secondary" id="cartMapClearBtn">Clear captures</button>
+        </div>
+      </div>
+      <p class="cart-map-saved" id="cartMapSavedNote" hidden></p>
     </div>
   </div>
 
