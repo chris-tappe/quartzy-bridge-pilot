@@ -519,12 +519,219 @@
       z-index: 20;
     }
     .toast.show { opacity: 1; transform: translateY(0); }
+    .fetch-price-block {
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    .fetch-price-title {
+      margin: 0 0 4px 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: #111;
+    }
+    .fetch-price-sub {
+      margin: 0 0 10px 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .fetch-price-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    .fetch-price-row label {
+      font-size: 11px;
+      font-weight: 500;
+      color: #374151;
+    }
+    .fetch-price-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--input-bg);
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .fetch-price-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0 8px;
+      flex-wrap: wrap;
+    }
+    .fetch-price-btn {
+      padding: 8px 14px;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent-blue);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .fetch-price-btn:hover:not(:disabled) { background: var(--accent-blue-hover); }
+    .fetch-price-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .login-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      border: 1px solid #e5e7eb;
+      background: #f3f4f6;
+      color: #6b7280;
+    }
+    .login-badge.is-in {
+      background: #dcfce7;
+      border-color: #86efac;
+      color: #166534;
+    }
+    .login-badge.is-out {
+      background: #fef3c7;
+      border-color: #fcd34d;
+      color: #92400e;
+    }
+    .login-badge.is-unknown {
+      background: #f3f4f6;
+      border-color: #e5e7eb;
+      color: #6b7280;
+    }
+    .fetch-price-status {
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 0 0 8px 0;
+      color: var(--text);
+    }
+    .fetch-price-status.is-error { color: #b91c1c; }
+    .fetch-price-status.is-warn { color: #92400e; }
+    .fetch-price-status.is-loading { color: var(--muted); }
+    .fetch-price-single {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 8px 0;
+    }
+    .fetch-price-table-wrap {
+      overflow-x: auto;
+      margin-top: 6px;
+    }
+    .fetch-price-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .fetch-price-table th,
+    .fetch-price-table td {
+      text-align: left;
+      padding: 6px 6px;
+      border-bottom: 1px solid #e8e8e8;
+      vertical-align: top;
+      word-break: break-word;
+    }
+    .fetch-price-table th {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--muted);
+    }
+    .fetch-price-table tr.is-suggested {
+      background: #fef3ec;
+    }
+    .fetch-price-table tr.is-suggested td:first-child {
+      box-shadow: inset 3px 0 0 var(--quartzy-orange);
+    }
+    .fetch-price-result[hidden] { display: none !important; }
+    .fetch-price-debug {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed #e5e7eb;
+    }
+    .fetch-price-debug-h {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .fetch-price-debug-h .debug-kicker { margin: 0; }
+    .fetch-price-copy-btn {
+      flex-shrink: 0;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: inherit;
+      color: var(--accent-blue);
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .fetch-price-copy-btn:hover { background: #dbeafe; }
+    .fetch-price-debug-summary {
+      margin: 0 0 6px 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .fetch-price-debug-pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      font-size: 10px;
+      font-family: ui-monospace, "Cascadia Code", Menlo, Monaco, monospace;
+      background: #f3f4f6;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #374151;
+    }
+    .fetch-price-debug[hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <div class="app-scroll" id="appMainScroll">
   <h1 class="visually-hidden">Quartzy Connect</h1>
   <p class="visually-hidden" id="headerCaptureLive" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <div class="card debug-card fetch-price-standalone" id="fetchPriceStandalone" hidden style="margin-bottom: 12px;">
+    <div class="fetch-price-block" id="fetchPriceBlock" style="margin-bottom: 0; padding-bottom: 0; border-bottom: none;">
+      <h3 class="fetch-price-title">Fetch Price (test)</h3>
+      <p class="fetch-price-sub">Opens the URL in a background tab, scrapes price / variants, then closes the tab. Dev only.</p>
+      <div class="fetch-price-row">
+        <label for="fetchPriceUrl">Product URL</label>
+        <input type="url" class="fetch-price-input" id="fetchPriceUrl" placeholder="https://…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="fetch-price-row">
+        <label for="fetchPriceCatalog">Catalog # <span style="font-weight:400;color:var(--muted)">(optional — highlights match)</span></label>
+        <input type="text" class="fetch-price-input" id="fetchPriceCatalog" placeholder="e.g. 12345" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="fetch-price-actions">
+        <button type="button" class="fetch-price-btn" id="fetchPriceBtn">Fetch Price</button>
+        <span class="login-badge is-unknown" id="fetchPriceLoginBadge" aria-live="polite">Login: —</span>
+      </div>
+      <p class="fetch-price-status" id="fetchPriceStatus" hidden></p>
+      <div class="fetch-price-result" id="fetchPriceResult" hidden></div>
+      <div class="fetch-price-debug" id="fetchPriceDebug" hidden>
+        <div class="fetch-price-debug-h">
+          <p class="debug-kicker">Debug log</p>
+          <button type="button" class="fetch-price-copy-btn" id="fetchPriceCopyDebug">Copy debug JSON</button>
+        </div>
+        <p class="fetch-price-debug-summary" id="fetchPriceDebugSummary"></p>
+        <pre class="fetch-price-debug-pre" id="fetchPriceDebugPre" aria-label="Fetch price debug JSON"></pre>
+      </div>
+    </div>
+  </div>
 
   <p class="empty" id="emptyState">Select a website tab in this window. When a product page loads, its capture will appear here.</p>
 
@@ -664,6 +871,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="featureFlags.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

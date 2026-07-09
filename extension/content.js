@@ -1269,11 +1269,1111 @@ async function doCaptureRun() {
   }
 }
 
+/**
+ * @returns {{ t: number, steps: Array<{ t: number, step: string, detail?: object }>, notes: string[] }}
+ */
+function createFetchPriceDebugLog() {
+  return { t0: Date.now(), steps: [], notes: [] };
+}
+
+/**
+ * @param {ReturnType<typeof createFetchPriceDebugLog>} log
+ * @param {string} step
+ * @param {object} [detail]
+ */
+function fpDebug(log, step, detail) {
+  if (!log) return;
+  const entry = { t: Date.now() - (log.t0 || Date.now()), step: step };
+  if (detail != null) {
+    entry.detail = detail;
+  }
+  log.steps.push(entry);
+  try {
+    console.log("[Quartzy FetchPrice]", step, detail != null ? detail : "");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {Element|null|undefined} el
+ * @returns {string}
+ */
+function describeEl(el) {
+  if (!el || !el.tagName) {
+    return "";
+  }
+  let s = String(el.tagName).toLowerCase();
+  if (el.id) {
+    s += "#" + el.id;
+  }
+  if (el.className && typeof el.className === "string") {
+    const cls = el.className.trim().split(/\s+/).slice(0, 4).join(".");
+    if (cls) {
+      s += "." + cls;
+    }
+  }
+  return s;
+}
+
+/**
+ * Snapshot of what the content script sees on the loaded tab (for debug paste-back).
+ * @returns {object}
+ */
+function captureFetchPricePageSnapshot() {
+  const containers = getPricingContainers();
+  const radios = queryAllUomRadios();
+  const shared = findSharedPriceWidget();
+  const checked = queryCheckedUomRadio();
+  const bodyText = ((document.body && document.body.innerText) || "").replace(/\s+/g, " ").trim();
+  const jsonLdCount = document.querySelectorAll('script[type="application/ld+json"]').length;
+  const priceEls = document.querySelectorAll(
+    '.webprice-container, [itemprop="price"], meta[itemprop="price"], .price-final_price, [data-price-type]'
+  );
+  const priceSamples = [];
+  for (let i = 0; i < Math.min(priceEls.length, 8); i++) {
+    const el = priceEls[i];
+    const raw =
+      (el.getAttribute && el.getAttribute("content")) ||
+      (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    priceSamples.push({ el: describeEl(el), text: raw });
+  }
+  return {
+    href: location.href,
+    title: document.title || "",
+    readyState: document.readyState,
+    hostname: location.hostname,
+    jsonLdScriptCount: jsonLdCount,
+    pricingContainers: containers.map(describeEl),
+    uomRadioCount: radios.length,
+    uomRadioNames: radios.slice(0, 12).map(function (r) {
+      return { name: r.name || "", value: String(r.value || "").slice(0, 40), checked: !!r.checked };
+    }),
+    checkedUomRadio: checked
+      ? { name: checked.name || "", value: String(checked.value || "").slice(0, 40), scope: describeEl(getRadioVariantRowScope(checked)) }
+      : null,
+    sharedPriceWidget: describeEl(shared) || null,
+    priceElementSamples: priceSamples,
+    bodyTextLength: bodyText.length,
+    bodyTextHead: bodyText.slice(0, 600),
+    bodyTextPriceRegion: (function () {
+      const near =
+        document.querySelector(".webprice-container, #pricing_container, .product_add_to_cart") ||
+        document.body;
+      return ((near && near.innerText) || "").replace(/\s+/g, " ").trim().slice(0, 500);
+    })(),
+    hasSignInLink: !!document.querySelector('a[href*="login" i], a[href*="signin" i], a[href*="sign-in" i]'),
+    hasSignOutLink: !!document.querySelector('a[href*="logout" i], a[href*="signout" i], a[href*="sign-out" i]')
+  };
+}
+
+/**
+ * Pricing / buy-box roots used by {@link queryCheckedUomRadio} — reused for variant enumeration.
+ * @returns {Element[]}
+ */
+function getPricingContainers() {
+  const candidates = [
+    document.getElementById("pricing_container"),
+    document.getElementById("Pricing"),
+    document.querySelector(".pricing_container"),
+    document.querySelector(".product_add_to_cart"),
+    document.querySelector("form[action*=\"cart\"]"),
+    document.querySelector("variant-picker"),
+    document.querySelector("fieldset.option-selector"),
+    document.querySelector(".product-options-wrapper"),
+    document.querySelector(".product-options-bottom"),
+    document.querySelector("ul.radio_list"),
+    document.querySelector("ul.radio-list")
+  ];
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (c && !seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function catalogNumbersMatch(a, b) {
+  if (!isNonEmptyTrim(a) || !isNonEmptyTrim(b)) {
+    return false;
+  }
+  const na = String(a).replace(/[\s#-]+/g, "").toLowerCase();
+  const nb = String(b).replace(/[\s#-]+/g, "").toLowerCase();
+  return na.length > 0 && na === nb;
+}
+
+/**
+ * @param {Element} scope
+ * @param {HTMLInputElement|null} radio
+ * @returns {string}
+ */
+function readVariantLabelFromScope(scope, radio) {
+  if (!scope) {
+    return "";
+  }
+  const optVal = scope.querySelector(".opt-value, [class*='opt-value'], span.label, .label");
+  if (optVal) {
+    const t = (optVal.textContent || "").replace(/\s+/g, " ").trim();
+    if (t && t.length < 120) {
+      return t;
+    }
+  }
+  if (radio) {
+    let label = radio.labels && radio.labels[0];
+    if (!label && radio.id) {
+      label = document.querySelector('label[for="' + CSS.escape(radio.id) + '"]');
+    }
+    if (label) {
+      const t = (label.textContent || "").replace(/\s+/g, " ").trim();
+      if (t && t.length < 120) {
+        return t;
+      }
+    }
+    const v = radio.value;
+    if (v && String(v).length < 80) {
+      return String(v);
+    }
+  }
+  const unit = readItempropUnitTextInScope(scope, radio);
+  if (isNonEmptyTrim(unit)) {
+    return unit;
+  }
+  return "";
+}
+
+/**
+ * @param {Element} scope
+ * @returns {string}
+ */
+function readCatalogFromScopeText(scope) {
+  if (!scope) {
+    return "";
+  }
+  const text = (scope.innerText || scope.textContent || "").replace(/\s+/g, " ").trim();
+  const m =
+    text.match(/\b(?:Cat(?:alog)?\.?\s*#?|SKU|Item\s*#|Mfr\.?\s*#)\s*[:#]?\s*([A-Z0-9][A-Z0-9._/-]{2,32})\b/i) ||
+    text.match(/\b([A-Z]{1,5}\d{3,}[A-Z0-9._/-]*)\b/);
+  return m ? m[1] : "";
+}
+
+/**
+ * @returns {Element|null}
+ */
+function findSharedPriceWidget() {
+  return (
+    document.querySelector(".webprice-container") ||
+    document.querySelector("#pricing_container .price, .product_add_to_cart [itemprop=\"price\"]") ||
+    document.querySelector("[data-price-type=\"finalPrice\"], .price-final_price, .product-info-price")
+  );
+}
+
+/**
+ * @param {Element} watchRoot
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+function waitForPriceUpdate(watchRoot, timeoutMs) {
+  const ms = timeoutMs != null ? timeoutMs : 800;
+  return new Promise(function (resolve) {
+    if (!watchRoot || typeof MutationObserver === "undefined") {
+      setTimeout(resolve, Math.min(ms, 200));
+      return;
+    }
+    let done = false;
+    const finish = function () {
+      if (done) {
+        return;
+      }
+      done = true;
+      try {
+        obs.disconnect();
+      } catch (e) {
+        /* ignore */
+      }
+      resolve();
+    };
+    const obs = new MutationObserver(function () {
+      finish();
+    });
+    try {
+      obs.observe(watchRoot, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true
+      });
+    } catch (e) {
+      setTimeout(finish, Math.min(ms, 200));
+      return;
+    }
+    setTimeout(finish, ms);
+  });
+}
+
+/**
+ * @param {HTMLInputElement} radio
+ */
+function activateVariantRadio(radio) {
+  if (!radio) {
+    return;
+  }
+  try {
+    radio.focus({ preventScroll: true });
+  } catch (e) {
+    try {
+      radio.focus();
+    } catch (e2) {
+      /* ignore */
+    }
+  }
+  if (!radio.checked) {
+    radio.checked = true;
+  }
+  try {
+    radio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  } catch (e) {
+    try {
+      radio.click();
+    } catch (e2) {
+      /* ignore */
+    }
+  }
+  try {
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+    radio.dispatchEvent(new Event("input", { bubbles: true }));
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {HTMLInputElement[]} radios
+ * @returns {HTMLInputElement[]}
+ */
+function uniqueRadiosByNameGroup(radios) {
+  if (!radios || !radios.length) {
+    return [];
+  }
+  const byName = {};
+  for (let i = 0; i < radios.length; i++) {
+    const r = radios[i];
+    const name = r.name || "__anon_" + i;
+    if (!byName[name]) {
+      byName[name] = [];
+    }
+    byName[name].push(r);
+  }
+  let best = [];
+  Object.keys(byName).forEach(function (k) {
+    if (byName[k].length > best.length) {
+      best = byName[k];
+    }
+  });
+  return best;
+}
+
+/**
+ * Collect UOM/variant radios inside pricing containers (all options, not only checked).
+ * @returns {HTMLInputElement[]}
+ */
+function queryAllUomRadios() {
+  const containers = getPricingContainers();
+  const found = [];
+  const seen = new Set();
+  const pushAll = function (root, sel) {
+    if (!root || !root.querySelectorAll) {
+      return;
+    }
+    const list = root.querySelectorAll(sel);
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (r && !seen.has(r)) {
+        seen.add(r);
+        found.push(r);
+      }
+    }
+  };
+  for (let c = 0; c < containers.length; c++) {
+    pushAll(containers[c], "input.uom-input[type=radio]");
+    pushAll(containers[c], "ul.radio_list input[type=radio], ul.radio-list input[type=radio]");
+    pushAll(containers[c], "input[type=radio].opt-btn, fieldset input[type=radio]");
+  }
+  if (!found.length) {
+    pushAll(document, "ul.radio_list input[type=radio], ul.radio-list input[type=radio], input.uom-input[type=radio]");
+  }
+  if (!found.length) {
+    const sw = document.querySelectorAll(
+      ".swatch-attribute input[type=radio], input[name^='super_attribute'][type=radio]"
+    );
+    for (let i = 0; i < sw.length; i++) {
+      if (!seen.has(sw[i])) {
+        seen.add(sw[i]);
+        found.push(sw[i]);
+      }
+    }
+  }
+  return uniqueRadiosByNameGroup(found);
+}
+
+/**
+ * @param {Element} row
+ * @returns {boolean}
+ */
+function rowLooksLikeVariantGridRow(row) {
+  if (!row || !row.querySelector) {
+    return false;
+  }
+  if (row.closest("thead")) {
+    return false;
+  }
+  const partial = extractFromTableRow(row);
+  if (tableRowExtractionIsUseful(partial) && isNonEmptyTrim(partial.price)) {
+    return true;
+  }
+  const scopePrice = readItempropPriceInScope(row, row.querySelector("input[type=radio]"));
+  return isNonEmptyTrim(scopePrice);
+}
+
+/**
+ * @param {Element} tr
+ * @returns {boolean}
+ */
+function rowLooksSelectedInSelectorTable(tr) {
+  if (!tr || !tr.classList) {
+    return false;
+  }
+  if (tr.getAttribute && (tr.getAttribute("aria-selected") === "true" || tr.getAttribute("aria-current") === "true")) {
+    return true;
+  }
+  const cls = String(tr.className || "").toLowerCase();
+  if (
+    /\b(active|selected|current|is-active|is-selected|is-current)\b/.test(cls) ||
+    cls.indexOf("active-row") !== -1 ||
+    cls.indexOf("selected-row") !== -1
+  ) {
+    return true;
+  }
+  if (tr.querySelector && tr.querySelector("input[type=radio]:checked, input[type=checkbox]:checked")) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Catalog + size/quantity selector tables (e.g. Thermo Fisher PDP) where each row is a SKU
+ * but price lives only on the currently selected product (JSON-LD / buy box), not per row.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {Array<{ label: string, catalogNumber: string, price: string, unitSize: string, isSelected: boolean }>|null}
+ */
+function scrapeSelectorTableVariants(log) {
+  const tables = document.querySelectorAll(
+    ".pdp-table-product-selector table, .pdp-product-selector table, table"
+  );
+  let best = null;
+  let bestScore = 0;
+
+  for (let t = 0; t < tables.length; t++) {
+    const table = tables[t];
+    if (!table || table.closest("thead")) {
+      continue;
+    }
+    const headers = getTableHeaderLabelStringsForGridRoot(table);
+    if (!headers || headers.length < 2) {
+      continue;
+    }
+    const kinds = headers.map(classifyTableHeaderText);
+    const hasCatalog = kinds.indexOf("catalog") !== -1;
+    const hasSizeOrQty = kinds.indexOf("size") !== -1 || kinds.indexOf("quantity") !== -1;
+    if (!hasCatalog || !hasSizeOrQty) {
+      continue;
+    }
+    /* Prefer true selector tables (no price column). Priced grids are handled elsewhere. */
+    const hasPriceCol = kinds.indexOf("price") !== -1;
+
+    const bodyRows = table.querySelectorAll("tbody tr, tr");
+    const variants = [];
+    let selectedCount = 0;
+    for (let i = 0; i < bodyRows.length; i++) {
+      const tr = bodyRows[i];
+      if (!tr || tr.closest("thead") || (tr.getAttribute && tr.getAttribute("role") === "columnheader")) {
+        continue;
+      }
+      if (!tr.querySelector("td, [role=cell]")) {
+        continue;
+      }
+      const partial = extractFromTableRow(tr);
+      if (!isNonEmptyTrim(partial.catalogNumber)) {
+        continue;
+      }
+      /* Need a pack/size signal — quantity column mapped to unitSize, or size column. */
+      if (!isNonEmptyTrim(partial.unitSize) && !isNonEmptyTrim(partial.itemName)) {
+        continue;
+      }
+      const isSelected = rowLooksSelectedInSelectorTable(tr);
+      if (isSelected) {
+        selectedCount += 1;
+      }
+      const unitSize = partial.unitSize || "";
+      const label = unitSize || partial.itemName || partial.catalogNumber;
+      variants.push({
+        label: label,
+        catalogNumber: partial.catalogNumber,
+        price: partial.price || "",
+        unitSize: unitSize,
+        isSelected: isSelected,
+        _priceSource: isNonEmptyTrim(partial.price) ? "table-row" : ""
+      });
+    }
+    if (variants.length < 2) {
+      continue;
+    }
+    let score = variants.length * 10 + selectedCount * 5;
+    if (table.closest(".pdp-product-selector, .pdp-table-product-selector, [class*='product-selector']")) {
+      score += 50;
+    }
+    if (!hasPriceCol) {
+      score += 20;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = variants;
+    }
+  }
+
+  if (!best) {
+    fpDebug(log, "selector_table_scan", { found: false });
+    return null;
+  }
+  fpDebug(log, "selector_table_scan", {
+    found: true,
+    count: best.length,
+    selectedCount: best.filter(function (v) {
+      return v.isSelected;
+    }).length,
+    sample: best.slice(0, 8).map(function (v) {
+      return {
+        label: v.label,
+        catalogNumber: v.catalogNumber,
+        unitSize: v.unitSize,
+        isSelected: v.isSelected,
+        price: v.price || ""
+      };
+    })
+  });
+  return best;
+}
+
+/**
+ * Grid pattern: each row already has its own price in the DOM.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {Array<{ label: string, catalogNumber: string, price: string, unitSize: string, isSelected: boolean }>|null}
+ */
+function scrapeGridVariantRows(log) {
+  const containers = getPricingContainers();
+  const roots = containers.length ? containers : [document];
+  const rows = [];
+  const seen = new Set();
+  let candidateCount = 0;
+  let skippedNoPrice = 0;
+
+  for (let r = 0; r < roots.length; r++) {
+    const root = roots[r];
+    if (!root || !root.querySelectorAll) {
+      continue;
+    }
+    const candidates = root.querySelectorAll(
+      "table tbody tr, [role=table] [role=row], ul.radio_list > li, ul.radio-list > li, li.single_page_price_list"
+    );
+    candidateCount += candidates.length;
+    for (let i = 0; i < candidates.length; i++) {
+      const row = candidates[i];
+      if (!row || seen.has(row)) {
+        continue;
+      }
+      if (row.getAttribute && row.getAttribute("role") === "columnheader") {
+        continue;
+      }
+      if (!rowLooksLikeVariantGridRow(row) && !row.querySelector("input[type=radio]")) {
+        continue;
+      }
+      const radio = row.querySelector("input[type=radio]");
+      let label = "";
+      let catalogNumber = "";
+      let price = "";
+      let unitSize = "";
+      let isSelected = !!(radio && radio.checked);
+      let priceSource = "";
+
+      if (row.matches && (row.matches("tr, [role=row]") || row.closest("table, [role=table]"))) {
+        const partial = extractFromTableRow(row);
+        if (tableRowExtractionIsUseful(partial)) {
+          label = partial.itemName || partial.unitSize || "";
+          catalogNumber = partial.catalogNumber || "";
+          price = partial.price || "";
+          unitSize = partial.unitSize || "";
+          if (isNonEmptyTrim(price)) {
+            priceSource = "table-row";
+          }
+        }
+      }
+      if (!isNonEmptyTrim(price)) {
+        price = readItempropPriceInScope(row, radio);
+        if (isNonEmptyTrim(price)) {
+          priceSource = "itemprop/webprice-in-row";
+        }
+      }
+      if (!isNonEmptyTrim(unitSize)) {
+        unitSize = readItempropUnitTextInScope(row, radio);
+      }
+      if (!isNonEmptyTrim(label)) {
+        label = readVariantLabelFromScope(row, radio) || unitSize;
+      }
+      if (!isNonEmptyTrim(catalogNumber)) {
+        catalogNumber = readCatalogFromScopeText(row);
+      }
+      if (!isNonEmptyTrim(price) && !isNonEmptyTrim(unitSize) && !isNonEmptyTrim(catalogNumber)) {
+        continue;
+      }
+      /* Grid: require an in-row price so we don't treat shared-widget radios as a grid. */
+      if (!isNonEmptyTrim(price)) {
+        skippedNoPrice += 1;
+        continue;
+      }
+      seen.add(row);
+      rows.push({
+        label: label || unitSize || catalogNumber || "Option",
+        catalogNumber: catalogNumber || "",
+        price: price || "",
+        unitSize: unitSize || "",
+        isSelected: isSelected,
+        _priceSource: priceSource
+      });
+    }
+    if (rows.length) {
+      break;
+    }
+  }
+  fpDebug(log, "grid_scan", {
+    rootCount: roots.length,
+    candidateCount: candidateCount,
+    kept: rows.length,
+    skippedNoPrice: skippedNoPrice,
+    sample: rows.slice(0, 5).map(function (v) {
+      return { label: v.label, catalogNumber: v.catalogNumber, price: v.price, priceSource: v._priceSource };
+    })
+  });
+  return rows.length ? rows : null;
+}
+
+/**
+ * Shared-widget pattern: one price node updates when each radio is selected.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {Promise<Array<{ label: string, catalogNumber: string, price: string, unitSize: string, isSelected: boolean }>|null>}
+ */
+async function scrapeSharedWidgetVariants(log) {
+  const radios = queryAllUomRadios();
+  if (radios.length < 2) {
+    fpDebug(log, "shared_widget_skip", { reason: "fewer_than_2_radios", count: radios.length });
+    return null;
+  }
+  /* If every radio row already has its own price, prefer grid path (caller checks grid first). */
+  let rowsWithOwnPrice = 0;
+  for (let i = 0; i < radios.length; i++) {
+    const scope = getRadioVariantRowScope(radios[i]);
+    if (scope && isNonEmptyTrim(readItempropPriceInScope(scope, radios[i]))) {
+      rowsWithOwnPrice += 1;
+    }
+  }
+  if (rowsWithOwnPrice >= radios.length) {
+    fpDebug(log, "shared_widget_skip", {
+      reason: "all_rows_have_own_price",
+      radioCount: radios.length,
+      rowsWithOwnPrice: rowsWithOwnPrice
+    });
+    return null;
+  }
+
+  const watchRoot =
+    findSharedPriceWidget() ||
+    document.getElementById("pricing_container") ||
+    document.querySelector(".product_add_to_cart") ||
+    document.body;
+  fpDebug(log, "shared_widget_start", {
+    radioCount: radios.length,
+    rowsWithOwnPrice: rowsWithOwnPrice,
+    watchRoot: describeEl(watchRoot)
+  });
+  const variants = [];
+
+  for (let i = 0; i < radios.length; i++) {
+    const radio = radios[i];
+    const tClick = Date.now();
+    activateVariantRadio(radio);
+    await waitForPriceUpdate(watchRoot, 800);
+    const waitMs = Date.now() - tClick;
+    const scope = getRadioVariantRowScope(radio) || watchRoot;
+    let price = readItempropPriceInScope(watchRoot, radio);
+    let priceSource = isNonEmptyTrim(price) ? "watchRoot_itemprop/webprice" : "";
+    if (!isNonEmptyTrim(price)) {
+      price = readItempropPriceInScope(scope, radio);
+      if (isNonEmptyTrim(price)) {
+        priceSource = "row_scope_itemprop/webprice";
+      }
+    }
+    if (!isNonEmptyTrim(price)) {
+      const v = scrapeSelectedRadioGroupVariant();
+      if (v && isNonEmptyTrim(v.price)) {
+        price = v.price;
+        priceSource = "scrapeSelectedRadioGroupVariant";
+      }
+    }
+    let unitSize = readItempropUnitTextInScope(scope, radio);
+    if (!isNonEmptyTrim(unitSize)) {
+      const v2 = scrapeSelectedRadioGroupVariant();
+      if (v2 && isNonEmptyTrim(v2.unitSize)) {
+        unitSize = v2.unitSize;
+      }
+    }
+    const label = readVariantLabelFromScope(scope, radio) || unitSize || radio.value || "Option " + (i + 1);
+    const catalogNumber = readCatalogFromScopeText(scope);
+    variants.push({
+      label: label,
+      catalogNumber: catalogNumber || "",
+      price: price || "",
+      unitSize: unitSize || "",
+      isSelected: true,
+      _priceSource: priceSource || "none"
+    });
+    fpDebug(log, "shared_widget_option", {
+      index: i,
+      value: String(radio.value || "").slice(0, 40),
+      waitMs: waitMs,
+      price: price || "",
+      priceSource: priceSource || "none",
+      unitSize: unitSize || "",
+      label: label
+    });
+  }
+  return variants.length ? variants : null;
+}
+
+/**
+ * Attach page-level (baseline) price to the selected selector-table row when rows lack prices.
+ * Other rows stay price-empty — navigating to that SKU would be needed for their contract price.
+ * @param {Array<object>} variants
+ * @param {object|null} baseline
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {Array<object>}
+ */
+function attachBaselinePriceToSelectedVariant(variants, baseline, log) {
+  if (!variants || !variants.length || !baseline) {
+    return variants;
+  }
+  const basePrice = isNonEmptyTrim(baseline.price) ? baseline.price : "";
+  const baseCat = isNonEmptyTrim(baseline.catalogNumber) ? baseline.catalogNumber : "";
+  if (!basePrice) {
+    return variants;
+  }
+
+  let selectedIdx = -1;
+  for (let i = 0; i < variants.length; i++) {
+    if (variants[i].isSelected) {
+      selectedIdx = i;
+      break;
+    }
+  }
+  if (selectedIdx < 0 && baseCat) {
+    for (let i = 0; i < variants.length; i++) {
+      if (catalogNumbersMatch(variants[i].catalogNumber, baseCat)) {
+        selectedIdx = i;
+        variants[i].isSelected = true;
+        break;
+      }
+    }
+  }
+  if (selectedIdx < 0) {
+    fpDebug(log, "selector_price_attach", { attached: false, reason: "no_selected_row" });
+    return variants;
+  }
+
+  const v = variants[selectedIdx];
+  if (!isNonEmptyTrim(v.price)) {
+    v.price = basePrice;
+    v._priceSource = (baseline.fieldSources && baseline.fieldSources.price) || "baseline_selected";
+  }
+  /* Prefer baseline unit/catalog when selected row matches that SKU. */
+  if (baseCat && catalogNumbersMatch(v.catalogNumber, baseCat)) {
+    if (isNonEmptyTrim(baseline.unitSize) && !isNonEmptyTrim(v.unitSize)) {
+      v.unitSize = baseline.unitSize;
+    }
+  }
+  fpDebug(log, "selector_price_attach", {
+    attached: true,
+    index: selectedIdx,
+    catalogNumber: v.catalogNumber,
+    price: v.price,
+    priceSource: v._priceSource || null
+  });
+  return variants;
+}
+
+/**
+ * Enumerate all variant prices on the page (grid, selector table, or shared-widget).
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @param {object|null} [baseline] - used to stamp price onto the selected selector-table row
+ * @returns {Promise<{ mode: 'single'|'list', variants: Array<object>, pattern: string }>}
+ */
+async function scrapeAllVariants(log, baseline) {
+  let variants = scrapeGridVariantRows(log);
+  let pattern = "grid";
+  if (!variants) {
+    variants = scrapeSelectorTableVariants(log);
+    if (variants) {
+      pattern = "selector_table";
+      variants = attachBaselinePriceToSelectedVariant(variants, baseline || null, log);
+    }
+  }
+  if (!variants) {
+    variants = await scrapeSharedWidgetVariants(log);
+    pattern = variants ? "shared_widget" : "none";
+  }
+  if (!variants || !variants.length) {
+    fpDebug(log, "enumerate_result", { pattern: "none", mode: "single", count: 0 });
+    return { mode: "single", variants: [], pattern: "none" };
+  }
+  if (variants.length === 1) {
+    fpDebug(log, "enumerate_result", { pattern: pattern, mode: "single", count: 1 });
+    return { mode: "single", variants: variants, pattern: pattern };
+  }
+  fpDebug(log, "enumerate_result", { pattern: pattern, mode: "list", count: variants.length });
+  return { mode: "list", variants: variants, pattern: pattern };
+}
+
+/**
+ * DOM login heuristic: 'logged_in' | 'logged_out' | 'unknown'
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {'logged_in'|'logged_out'|'unknown'}
+ */
+function detectLoginStateFromDom(log) {
+  const bodyText = ((document.body && document.body.innerText) || "").slice(0, 20000);
+  const priceNear =
+    document.querySelector(".webprice-container, #pricing_container, .product_add_to_cart, [itemprop=\"price\"]") ||
+    document.body;
+  const nearText = ((priceNear && priceNear.innerText) || "").slice(0, 4000);
+
+  if (
+    /sign\s*in\s*to\s*see\s*your\s*price|log\s*in\s*(for|to\s*see)\s*(your\s*)?pric|login\s*for\s*pric|sign\s*in\s*for\s*(contract\s*)?pric/i.test(
+      nearText
+    ) ||
+    /sign\s*in\s*to\s*see\s*your\s*price|log\s*in\s*(for|to\s*see)\s*(your\s*)?pric|login\s*for\s*pric/i.test(bodyText)
+  ) {
+    fpDebug(log, "login_dom", { result: "logged_out", reason: "sign_in_to_see_price_text" });
+    return "logged_out";
+  }
+
+  const hasSignOut =
+    !!document.querySelector(
+      'a[href*="logout" i], a[href*="signout" i], a[href*="sign-out" i], button[href*="logout" i]'
+    ) || /\b(sign\s*out|log\s*out|my\s*account|welcome,?\s)/i.test(bodyText.slice(0, 8000));
+  const hasSignInCta = !!document.querySelector(
+    'a[href*="login" i], a[href*="signin" i], a[href*="sign-in" i], button[data-action*="login" i]'
+  );
+  const signInVisible =
+    hasSignInCta ||
+    (/\b(sign\s*in|log\s*in)\b/i.test(bodyText.slice(0, 6000)) &&
+      !/\b(sign\s*out|log\s*out|my\s*account)\b/i.test(bodyText.slice(0, 6000)));
+
+  let result = "unknown";
+  let reason = "no_confident_markers";
+  if (hasSignOut && !signInVisible) {
+    result = "logged_in";
+    reason = "sign_out_or_account_without_sign_in";
+  } else if (signInVisible && !hasSignOut) {
+    result = "logged_out";
+    reason = "sign_in_cta_without_sign_out";
+  } else if (hasSignOut) {
+    result = "logged_in";
+    reason = "sign_out_present";
+  }
+  fpDebug(log, "login_dom", { result: result, reason: reason, hasSignOut: hasSignOut, signInVisible: signInVisible });
+  return result;
+}
+
+/**
+ * Bot-check / login-wall / load failure heuristics for the fetch-price debug tool.
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {string|null} error code or null if page looks usable
+ */
+function detectFetchPricePageBlocker(log) {
+  const title = (document.title || "").toLowerCase();
+  const href = String(location.href || "").toLowerCase();
+  const text = ((document.body && document.body.innerText) || "").slice(0, 12000).toLowerCase();
+
+  if (
+    /captcha|are you a human|verify you are|cloudflare|attention required|access denied|bot detection|perimeterx|datadome/i.test(
+      title + " " + text.slice(0, 2000)
+    )
+  ) {
+    fpDebug(log, "blocker", { code: "bot_check", title: document.title });
+    return "bot_check";
+  }
+  if (
+    /\/login|\/signin|\/sign-in|\/sso\b|\/auth\b/.test(href) &&
+    !/product|catalog|pdp|sku/i.test(href)
+  ) {
+    fpDebug(log, "blocker", { code: "login_wall", reason: "auth_url", href: location.href });
+    return "login_wall";
+  }
+  if (
+    (/\b(sign\s*in|log\s*in)\b/.test(text.slice(0, 3000)) &&
+      /password|email|username/.test(text.slice(0, 3000)) &&
+      !document.querySelector("#pricing_container, .webprice-container, [itemprop=\"price\"], ul.radio_list"))
+  ) {
+    fpDebug(log, "blocker", { code: "login_wall", reason: "login_form_no_pricing" });
+    return "login_wall";
+  }
+  fpDebug(log, "blocker", { code: null });
+  return null;
+}
+
+/**
+ * Baseline capture used by FETCH_PRICE_SCRAPE (same merge path as navigation scrape).
+ * @param {ReturnType<typeof createFetchPriceDebugLog>|null} [log]
+ * @returns {Promise<object>}
+ */
+async function runBaselineCaptureForFetchPrice(log) {
+  if (typeof QuartzyExtractionService === "undefined") {
+    fpDebug(log, "baseline", { error: "ExtractionService_missing" });
+    return {
+      itemName: "",
+      catalogNumber: "",
+      price: "",
+      unitSize: "",
+      url: location.href,
+      vendor: vendorLabel(),
+      fieldSources: { itemName: null, catalogNumber: null, price: null, unitSize: null }
+    };
+  }
+  const ex = await QuartzyExtractionService.run(document);
+  const h1 = document.querySelector("h1")?.innerText?.trim() || document.title.split("|")[0].trim() || "";
+  const ef = (ex && ex.fields) || {};
+  const catalogFromEx = isNonEmptyTrim(ef.catalogNumber) ? ef.catalogNumber : "";
+  const priceFromEx = isNonEmptyTrim(ef.price) ? ef.price : "";
+  const uDom = extractUnitSize();
+  fpDebug(log, "baseline_jsonld", {
+    h1: (h1 || "").slice(0, 120),
+    extractionFields: {
+      itemName: (ef.itemName || "").slice(0, 80),
+      catalogNumber: catalogFromEx,
+      price: priceFromEx,
+      unitSize: (ef.unitSize || "").slice(0, 80)
+    },
+    fieldSources: (ex && ex.fieldSources) || null,
+    unitFromDom: uDom
+  });
+  const merged0 = mergeProductFields(ex, {
+    h1: h1,
+    unitFromDom: uDom,
+    catalog: catalogFromEx,
+    price: priceFromEx,
+    vendor: vendorLabel()
+  });
+  let fieldSources = {
+    ...((ex && ex.fieldSources) || { itemName: null, catalogNumber: null, price: null, unitSize: null })
+  };
+  const mres = mergeExtractionWithPostLd(merged0, fieldSources, ex, null, "");
+  let merged = mres.merged;
+  fieldSources = mres.fieldSources;
+  let aiR = mres.aiRefined;
+  const beforeHints = { price: merged.price, unitSize: merged.unitSize, catalogNumber: merged.catalogNumber };
+  if (typeof QuartzyDomFieldHints !== "undefined" && typeof QuartzyDomFieldHints.applySavedHints === "function") {
+    const withHints = QuartzyDomFieldHints.applySavedHints(merged, fieldSources, normalizeWandValue);
+    merged = withHints.merged;
+    fieldSources = withHints.fieldSources;
+  }
+  const beforeVariant = { price: merged.price, unitSize: merged.unitSize };
+  mergeSelectedRadioVariantInto(merged, fieldSources, aiR);
+  applyLastTableRowExtractToMerge(merged, fieldSources, aiR);
+  fpDebug(log, "baseline_merged", {
+    beforeHints: beforeHints,
+    afterHintsAndVariant: {
+      itemName: (merged.itemName || "").slice(0, 80),
+      catalogNumber: merged.catalogNumber || "",
+      price: merged.price || "",
+      unitSize: merged.unitSize || ""
+    },
+    beforeVariant: beforeVariant,
+    fieldSources: fieldSources
+  });
+  return {
+    itemName: merged.itemName || "",
+    catalogNumber: merged.catalogNumber || "",
+    price: merged.price || "",
+    unitSize: merged.unitSize || "",
+    url: location.href,
+    vendor: vendorLabel(),
+    fieldSources: fieldSources
+  };
+}
+
+/**
+ * @param {string|undefined} catalogNumberHint
+ * @returns {Promise<object>}
+ */
+async function handleFetchPriceScrape(catalogNumberHint) {
+  const log = createFetchPriceDebugLog();
+  fpDebug(log, "scrape_start", {
+    catalogNumberHint: catalogNumberHint != null ? String(catalogNumberHint) : "",
+    href: location.href
+  });
+
+  let pageSnapshot = null;
+  try {
+    pageSnapshot = captureFetchPricePageSnapshot();
+    fpDebug(log, "page_snapshot", {
+      title: pageSnapshot.title,
+      href: pageSnapshot.href,
+      pricingContainers: pageSnapshot.pricingContainers,
+      uomRadioCount: pageSnapshot.uomRadioCount,
+      sharedPriceWidget: pageSnapshot.sharedPriceWidget,
+      jsonLdScriptCount: pageSnapshot.jsonLdScriptCount,
+      priceElementSamples: pageSnapshot.priceElementSamples
+    });
+  } catch (e) {
+    fpDebug(log, "page_snapshot_error", { message: (e && e.message) || String(e) });
+  }
+
+  const blocker = detectFetchPricePageBlocker(log);
+  const loginDom = detectLoginStateFromDom(log);
+  const baseline = await runBaselineCaptureForFetchPrice(log);
+  const enumerated = await scrapeAllVariants(log, baseline);
+  let mode = enumerated.mode;
+  let variants = enumerated.variants || [];
+  let outcomeSource = enumerated.pattern || "none";
+
+  if (!variants.length) {
+    mode = "single";
+    outcomeSource = "baseline_fallback";
+    variants = [
+      {
+        label: baseline.unitSize || baseline.itemName || "Product",
+        catalogNumber: baseline.catalogNumber || "",
+        price: baseline.price || "",
+        unitSize: baseline.unitSize || "",
+        isSelected: true,
+        _priceSource: (baseline.fieldSources && baseline.fieldSources.price) || "baseline"
+      }
+    ];
+    fpDebug(log, "fallback_baseline", {
+      price: baseline.price || "",
+      catalogNumber: baseline.catalogNumber || "",
+      fieldSources: baseline.fieldSources || null
+    });
+  } else if (variants.length === 1) {
+    mode = "single";
+  }
+
+  const hint = catalogNumberHint != null ? String(catalogNumberHint).trim() : "";
+  let suggestedCount = 0;
+  variants = variants.map(function (v) {
+    const matchHint = hint ? catalogNumbersMatch(v.catalogNumber, hint) : false;
+    if (matchHint) suggestedCount += 1;
+    /* Highlight catalog hint if provided; otherwise highlight the page's selected SKU. */
+    const highlight = matchHint || (!hint && !!v.isSelected);
+    return Object.assign({}, v, {
+      isSuggestedMatch: highlight
+    });
+  });
+
+  const cleanVariants = variants.map(function (v) {
+    const o = {
+      label: v.label || "",
+      catalogNumber: v.catalogNumber || "",
+      price: v.price || "",
+      unitSize: v.unitSize || "",
+      isSelected: !!v.isSelected,
+      isSuggestedMatch: !!v.isSuggestedMatch
+    };
+    if (v._priceSource) {
+      o.priceSource = v._priceSource;
+    }
+    return o;
+  });
+
+  fpDebug(log, "scrape_done", {
+    ok: !blocker,
+    error: blocker || null,
+    mode: mode,
+    outcomeSource: outcomeSource,
+    variantCount: cleanVariants.length,
+    suggestedMatchCount: suggestedCount,
+    loginState: loginDom,
+    prices: cleanVariants.map(function (v) {
+      return { price: v.price, catalogNumber: v.catalogNumber, priceSource: v.priceSource || null };
+    })
+  });
+
+  return {
+    ok: !blocker,
+    error: blocker || null,
+    mode: mode,
+    variants: cleanVariants,
+    baseline: baseline,
+    loginState: loginDom,
+    pageUrl: location.href,
+    pageTitle: document.title || "",
+    debug: {
+      version: 1,
+      outcomeSource: outcomeSource,
+      page: pageSnapshot,
+      steps: log.steps,
+      durationMs: Date.now() - log.t0
+    }
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "TRIGGER_SCRAPE") {
     console.log("[Quartzy Bridge] Re-scrape triggered by navigation.");
     resetCaptureState();
     run();
+  }
+
+  if (message.type === "FETCH_PRICE_SCRAPE") {
+    const hint = message.catalogNumber;
+    handleFetchPriceScrape(hint)
+      .then(function (result) {
+        sendResponse({ type: "FETCH_PRICE_RESULT", ...result });
+      })
+      .catch(function (e) {
+        sendResponse({
+          type: "FETCH_PRICE_RESULT",
+          ok: false,
+          error: "scrape_failed",
+          errorMessage: (e && e.message) || "scrape_failed",
+          mode: "single",
+          variants: [],
+          loginState: "unknown",
+          pageUrl: location.href,
+          pageTitle: document.title || "",
+          debug: {
+            version: 1,
+            error: (e && e.message) || "scrape_failed",
+            stack: (e && e.stack) || null,
+            href: location.href
+          }
+        });
+      });
+    return true;
   }
 
   if (message.type === "WAND_START" && message.field) {

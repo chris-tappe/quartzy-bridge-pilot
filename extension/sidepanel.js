@@ -836,6 +836,340 @@ if (cancelAddEl && lineQuantityEl) {
   });
 }
 
+/* —— Fetch Price test tool (gated by QUARTZY_FETCH_PRICE_TEST_ENABLED) —— */
+const fetchPriceStandalone = document.getElementById("fetchPriceStandalone");
+const fetchPriceBlock = document.getElementById("fetchPriceBlock");
+const fetchPriceUrlEl = document.getElementById("fetchPriceUrl");
+const fetchPriceCatalogEl = document.getElementById("fetchPriceCatalog");
+const fetchPriceBtn = document.getElementById("fetchPriceBtn");
+const fetchPriceLoginBadge = document.getElementById("fetchPriceLoginBadge");
+const fetchPriceStatus = document.getElementById("fetchPriceStatus");
+const fetchPriceResult = document.getElementById("fetchPriceResult");
+const fetchPriceDebug = document.getElementById("fetchPriceDebug");
+const fetchPriceDebugSummary = document.getElementById("fetchPriceDebugSummary");
+const fetchPriceDebugPre = document.getElementById("fetchPriceDebugPre");
+const fetchPriceCopyDebug = document.getElementById("fetchPriceCopyDebug");
+let fetchPriceInFlight = false;
+/** @type {object|null} */
+let lastFetchPriceDebug = null;
+
+function isFetchPriceTestEnabled() {
+  return typeof QUARTZY_FETCH_PRICE_TEST_ENABLED !== "undefined" && QUARTZY_FETCH_PRICE_TEST_ENABLED === true;
+}
+
+function initFetchPriceUi() {
+  const shell = fetchPriceStandalone || fetchPriceBlock;
+  if (!shell) return;
+  if (!isFetchPriceTestEnabled()) {
+    shell.hidden = true;
+    return;
+  }
+  shell.hidden = false;
+  if (fetchPriceBlock) fetchPriceBlock.hidden = false;
+  if (fetchPriceBtn) {
+    fetchPriceBtn.addEventListener("click", onFetchPriceClick);
+  }
+  if (fetchPriceCopyDebug) {
+    fetchPriceCopyDebug.addEventListener("click", onCopyFetchPriceDebug);
+  }
+  setFetchPriceLoginBadge("unknown");
+}
+
+/**
+ * @param {object|null|undefined} debug
+ * @param {object} [result]
+ */
+function renderFetchPriceDebug(debug, result) {
+  if (!fetchPriceDebug || !fetchPriceDebugPre) return;
+  if (!debug) {
+    lastFetchPriceDebug = null;
+    fetchPriceDebug.hidden = true;
+    fetchPriceDebugPre.textContent = "";
+    if (fetchPriceDebugSummary) fetchPriceDebugSummary.textContent = "";
+    return;
+  }
+  lastFetchPriceDebug = debug;
+  fetchPriceDebug.hidden = false;
+  try {
+    fetchPriceDebugPre.textContent = JSON.stringify(debug, null, 2);
+  } catch (e) {
+    fetchPriceDebugPre.textContent = String(debug);
+  }
+  if (fetchPriceDebugSummary) {
+    const req = debug.request || {};
+    const out = debug.outcome || {};
+    const page = (debug.content && debug.content.page) || {};
+    const cookie = (debug.background && debug.background.cookieCheck) || {};
+    const lines = [
+      "Request: " + (req.url || "—") + (req.catalogNumber ? " · cat " + req.catalogNumber : ""),
+      "Tab saw: " + (page.title || out.pageTitle || "—") + (page.href || out.pageUrl ? " @ " + (page.href || out.pageUrl) : ""),
+      "Containers: " +
+        (page.pricingContainers && page.pricingContainers.length
+          ? page.pricingContainers.join(", ")
+          : "(none)") +
+        " · radios: " +
+        (page.uomRadioCount != null ? page.uomRadioCount : "—") +
+        " · pattern: " +
+        ((debug.content && debug.content.outcomeSource) || "—"),
+      "Login: cookies=" +
+        (cookie.state || "—") +
+        (cookie.matchedNames && cookie.matchedNames.length
+          ? " [" + cookie.matchedNames.join(", ") + "]"
+          : "") +
+        " → resolved " +
+        (out.loginState || (result && result.loginState) || "—"),
+      "Outcome: " +
+        (out.ok === false || (result && result.ok === false) ? "FAIL" : "OK") +
+        (out.error || (result && result.error) ? " (" + (out.error || result.error) + ")" : "") +
+        " · mode=" +
+        (out.mode || (result && result.mode) || "—") +
+        " · variants=" +
+        (out.variantCount != null
+          ? out.variantCount
+          : result && Array.isArray(result.variants)
+            ? result.variants.length
+            : "—")
+    ];
+    fetchPriceDebugSummary.textContent = lines.join("\n");
+  }
+}
+
+function onCopyFetchPriceDebug() {
+  if (!lastFetchPriceDebug) {
+    showToast("No debug log yet. Run Fetch Price first.");
+    return;
+  }
+  let text;
+  try {
+    text = JSON.stringify(lastFetchPriceDebug, null, 2);
+  } catch (e) {
+    text = String(lastFetchPriceDebug);
+  }
+  const done = function (ok) {
+    showToast(ok ? "Debug JSON copied — paste it in chat." : "Could not copy. Select the log and copy manually.");
+  };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    navigator.clipboard.writeText(text).then(
+      function () {
+        done(true);
+      },
+      function () {
+        fallbackCopyText(text, done);
+      }
+    );
+  } else {
+    fallbackCopyText(text, done);
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {(ok: boolean) => void} done
+ */
+function fallbackCopyText(text, done) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    done(!!ok);
+  } catch (e) {
+    done(false);
+  }
+}
+
+/**
+ * @param {'logged_in'|'logged_out'|'unknown'|string} state
+ */
+function setFetchPriceLoginBadge(state) {
+  if (!fetchPriceLoginBadge) return;
+  fetchPriceLoginBadge.classList.remove("is-in", "is-out", "is-unknown");
+  if (state === "logged_in") {
+    fetchPriceLoginBadge.classList.add("is-in");
+    fetchPriceLoginBadge.textContent = "Logged in";
+  } else if (state === "logged_out") {
+    fetchPriceLoginBadge.classList.add("is-out");
+    fetchPriceLoginBadge.textContent = "Logged out";
+  } else {
+    fetchPriceLoginBadge.classList.add("is-unknown");
+    fetchPriceLoginBadge.textContent = "Unknown";
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {'loading'|'error'|'warn'|''} [kind]
+ */
+function setFetchPriceStatus(text, kind) {
+  if (!fetchPriceStatus) return;
+  if (!text) {
+    fetchPriceStatus.hidden = true;
+    fetchPriceStatus.textContent = "";
+    fetchPriceStatus.className = "fetch-price-status";
+    return;
+  }
+  fetchPriceStatus.hidden = false;
+  fetchPriceStatus.textContent = text;
+  fetchPriceStatus.className =
+    "fetch-price-status" +
+    (kind === "loading" ? " is-loading" : kind === "error" ? " is-error" : kind === "warn" ? " is-warn" : "");
+}
+
+/**
+ * @param {object} result
+ */
+function renderFetchPriceResult(result) {
+  if (!fetchPriceResult) return;
+  fetchPriceResult.textContent = "";
+  if (!result) {
+    fetchPriceResult.hidden = true;
+    return;
+  }
+  fetchPriceResult.hidden = false;
+
+  if (result.loginState === "logged_out" && result.ok) {
+    const warn = document.createElement("p");
+    warn.className = "fetch-price-status is-warn";
+    warn.textContent = "Login required warning: vendor session looks logged out; prices may be list/public only.";
+    fetchPriceResult.appendChild(warn);
+  }
+
+  const variants = Array.isArray(result.variants) ? result.variants : [];
+  const mode = result.mode === "list" && variants.length > 1 ? "list" : "single";
+
+  if (mode === "single") {
+    const v = variants[0] || {};
+    const p = document.createElement("p");
+    p.className = "fetch-price-single";
+    const price = isNonEmptyTrim(v.price) ? v.price : "—";
+    const unit = isNonEmptyTrim(v.unitSize) ? " / " + v.unitSize : "";
+    const cat = isNonEmptyTrim(v.catalogNumber) ? " · " + v.catalogNumber : "";
+    const src = v.priceSource ? "  [" + v.priceSource + "]" : "";
+    p.textContent = price + unit + cat + src;
+    fetchPriceResult.appendChild(p);
+  } else {
+    const wrap = document.createElement("div");
+    wrap.className = "fetch-price-table-wrap";
+    const table = document.createElement("table");
+    table.className = "fetch-price-table";
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    ["Label", "Catalog #", "Price", "Unit", "Source"].forEach(function (h) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    variants.forEach(function (v) {
+      const tr = document.createElement("tr");
+      if (v && (v.isSuggestedMatch || v.isSelected)) {
+        tr.classList.add("is-suggested");
+      }
+      const labelText =
+        (v.label || "") + (v.isSelected ? " · selected" : v.isSuggestedMatch ? " · match" : "");
+      const cells = [
+        labelText,
+        v.catalogNumber || "",
+        v.price || "—",
+        v.unitSize || "",
+        v.priceSource || ""
+      ];
+      cells.forEach(function (c) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    fetchPriceResult.appendChild(wrap);
+  }
+
+  renderFetchPriceDebug(result.debug || null, result);
+}
+
+function onFetchPriceClick() {
+  if (fetchPriceInFlight || !fetchPriceBtn) return;
+  const url = fetchPriceUrlEl ? String(fetchPriceUrlEl.value || "").trim() : "";
+  const catalogNumber = fetchPriceCatalogEl ? String(fetchPriceCatalogEl.value || "").trim() : "";
+  if (!url) {
+    setFetchPriceStatus("Enter a product URL.", "error");
+    return;
+  }
+  fetchPriceInFlight = true;
+  fetchPriceBtn.disabled = true;
+  setFetchPriceStatus("Opening background tab and scraping…", "loading");
+  setFetchPriceLoginBadge("unknown");
+  if (fetchPriceResult) {
+    fetchPriceResult.hidden = true;
+    fetchPriceResult.textContent = "";
+  }
+  renderFetchPriceDebug(null);
+
+  chrome.runtime.sendMessage(
+    { type: "FETCH_PRICE_REQUEST", url: url, catalogNumber: catalogNumber || undefined },
+    function (response) {
+      fetchPriceInFlight = false;
+      fetchPriceBtn.disabled = false;
+      if (chrome.runtime.lastError) {
+        setFetchPriceStatus(chrome.runtime.lastError.message || "Extension message failed.", "error");
+        setFetchPriceLoginBadge("unknown");
+        renderFetchPriceDebug({
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          request: { url: url, catalogNumber: catalogNumber },
+          outcome: {
+            ok: false,
+            error: "runtime_lastError",
+            message: chrome.runtime.lastError.message
+          }
+        });
+        return;
+      }
+      const result = response || {};
+      setFetchPriceLoginBadge(result.loginState || "unknown");
+
+      if (!result.ok) {
+        const code = result.error || "error";
+        let msg = result.errorMessage || "Fetch failed.";
+        if (code === "login_wall") {
+          setFetchPriceStatus(msg, "warn");
+        } else if (code === "bot_check") {
+          setFetchPriceStatus(msg, "warn");
+        } else if (code === "timeout") {
+          setFetchPriceStatus(msg, "error");
+        } else if (code === "page_load_failed") {
+          setFetchPriceStatus(msg, "error");
+        } else {
+          setFetchPriceStatus(msg, "error");
+        }
+        if (Array.isArray(result.variants) && result.variants.length) {
+          renderFetchPriceResult(result);
+        } else {
+          renderFetchPriceDebug(result.debug || null, result);
+        }
+        return;
+      }
+
+      setFetchPriceStatus(
+        result.mode === "list" ? "Found " + (result.variants || []).length + " variants." : "Price fetched.",
+        ""
+      );
+      renderFetchPriceResult(result);
+    }
+  );
+}
+
+initFetchPriceUi();
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "UPDATE_SIDE_PANEL" && message.tabId != null && message.data) {
     getActiveTabKey((tabId, tab) => {
