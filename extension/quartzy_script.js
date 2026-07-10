@@ -22,8 +22,40 @@ async function initQuartzy() {
         }
     });
 
-    initLookupPriceOnAddRequest();
-    initAddToVendorSite();
+    const lookupEnabled = isLookupPriceEnabled();
+    const atvEnabled = isAddToVendorSiteEnabled();
+    console.log("[Quartzy Bridge] Flags", {
+        lookupPrice: lookupEnabled,
+        addToVendorSite: atvEnabled,
+        path: location.pathname
+    });
+
+    if (lookupEnabled || atvEnabled) {
+        watchQuartzyDomAndRoute(function () {
+            if (lookupEnabled && isAddRequestPage()) {
+                ensureLookupPriceStyles();
+                scanAndMountLookupPrice();
+            }
+            if (atvEnabled) {
+                scanAndInjectAddToVendorControls();
+            }
+        }, 1500);
+    }
+
+    if (atvEnabled) {
+        document.addEventListener(
+            "click",
+            function (e) {
+                const t = e.target;
+                if (!t || !t.closest) return;
+                if (t.closest("#order-request-group-actions")) {
+                    setTimeout(scanAndInjectAddToVendorControls, 50);
+                    setTimeout(scanAndInjectAddToVendorControls, 250);
+                }
+            },
+            true
+        );
+    }
 }
 
 // Start initialization
@@ -302,7 +334,8 @@ document.addEventListener('change', (e) => {
 
 const LOOKUP_PRICE_STYLE_ID = "qc-lookup-price-style";
 const LOOKUP_PRICE_ROOT_ATTR = "data-qc-lookup-price";
-const ADD_REQUEST_PATH_RE = /^\/groups\/\d+\/requests\/new\/?$/i;
+/* Group ids may be numeric, "all", or UUID — do not require \\d+ only. */
+const ADD_REQUEST_PATH_RE = /^\/groups\/[^/]+\/requests\/new\/?$/i;
 
 /** @type {WeakMap<Element, { pageUrl: string, selectedCatalog: string, inFlight: boolean }>} */
 const lookupPriceStateByForm = new WeakMap();
@@ -320,20 +353,19 @@ function isAddRequestPage() {
 }
 
 function ensureLookupPriceStyles() {
-    let style = document.getElementById(LOOKUP_PRICE_STYLE_ID);
-    if (!style) {
-        style = document.createElement("style");
-        style.id = LOOKUP_PRICE_STYLE_ID;
-        document.documentElement.appendChild(style);
-    }
+    if (document.getElementById(LOOKUP_PRICE_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = LOOKUP_PRICE_STYLE_ID;
     style.textContent = `
 .qc-lookup-price-column {
-  flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;
-  margin-left: 4px;
+  align-items: flex-start;
+  margin: 8px 0 4px;
   overflow: visible;
   position: relative;
+  width: 100%;
+  max-width: 100%;
+  flex: 1 1 auto;
 }
 .qc-lookup-price {
   display: flex;
@@ -342,7 +374,7 @@ function ensureLookupPriceStyles() {
   justify-content: flex-start;
   gap: 6px;
   min-width: 140px;
-  max-width: 280px;
+  max-width: 100%;
   margin: 0;
   padding: 0 0 2px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -354,9 +386,10 @@ function ensureLookupPriceStyles() {
 }
 .qc-lookup-price-row {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 .qc-lookup-price-btn {
   appearance: none;
@@ -387,7 +420,7 @@ function ensureLookupPriceStyles() {
   margin: 0;
   color: #6b7280;
   font-size: 11px;
-  max-width: 260px;
+  max-width: 420px;
 }
 .qc-lookup-price-status.is-error { color: #b91c1c; }
 .qc-lookup-price-status.is-warn { color: #92400e; }
@@ -395,15 +428,15 @@ function ensureLookupPriceStyles() {
 .qc-lookup-price-status[hidden],
 .qc-lookup-price-panel[hidden] { display: none !important; }
 .qc-lookup-price-panel {
-  margin: 0;
+  margin: 8px 0 0;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #fff;
   padding: 8px;
-  max-width: min(520px, 42vw);
+  max-width: min(520px, 90vw);
   width: max-content;
-  position: absolute;
-  left: calc(100% + 12px);
+  position: relative;
+  left: 0;
   top: 0;
   z-index: 40;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
@@ -456,6 +489,7 @@ function ensureLookupPriceStyles() {
 }
 .qc-lookup-price-use-btn:hover { background: #dbeafe; }
 `;
+    document.documentElement.appendChild(style);
 }
 
 function readPowerSelectText(root) {
@@ -619,6 +653,7 @@ function setUnitPriceValue(input, priceRaw) {
 function getUnitPriceInput(form) {
     return (
         form.querySelector(".unit-price input") ||
+        form.querySelector(".unit-price .qz-input input") ||
         form.querySelector('input[name="price"]') ||
         findInputByLabelTextIn(form, "Unit Price")
     );
@@ -1005,7 +1040,7 @@ function runLookupPriceForForm(form, ui, overrideTarget) {
 
 function createLookupPriceUi(form) {
     const root = document.createElement("div");
-    root.className = "form-column qc-lookup-price-column";
+    root.className = "qc-lookup-price-column";
     root.setAttribute(LOOKUP_PRICE_ROOT_ATTR, "1");
 
     const inner = document.createElement("div");
@@ -1060,49 +1095,71 @@ function createLookupPriceUi(form) {
 }
 
 /**
- * Prefer the empty space to the right of Total in the qty/price row.
+ * Prefer a dedicated slot after the qty/price form-row so Ember flex layout
+ * does not clip the control. Fall back to Total column / row children.
+ * Never return our own injected node — that would remount-loop via MutationObserver.
  * @param {Element} form
- * @returns {Element|null} insertion anchor (insert after this node)
+ * @returns {{ anchor: Element, placement: "afterend"|"beforeend" }|null}
  */
-function findLookupPriceMountAnchor(form) {
-    const totalCol = form.querySelector(".form-column.total-column");
-    if (totalCol) return totalCol;
-
+function findLookupPriceMountTarget(form) {
     const priceInput = getUnitPriceInput(form);
     if (!priceInput) return null;
-    const row = priceInput.closest(".form-row");
-    if (row) return row.lastElementChild;
-    return (
-        form.querySelector(".unit-price") ||
-        priceInput.closest(".unit-price, .form-group, .field") ||
-        priceInput.parentElement
-    );
+
+    const priceRow = priceInput.closest(".form-row");
+    if (priceRow && priceRow.parentNode) {
+        return { anchor: priceRow, placement: "afterend" };
+    }
+
+    const totalCol = form.querySelector(".form-column.total-column");
+    if (totalCol && totalCol.parentNode) {
+        return { anchor: totalCol, placement: "afterend" };
+    }
+
+    const unitPrice = form.querySelector(".unit-price");
+    if (unitPrice && unitPrice.parentNode) {
+        return { anchor: unitPrice, placement: "afterend" };
+    }
+
+    return { anchor: form, placement: "beforeend" };
 }
 
 function mountLookupPriceOnForm(form) {
     if (!form) return;
     if (!getUnitPriceInput(form)) return;
 
-    const anchor = findLookupPriceMountAnchor(form);
-    if (!anchor || !anchor.parentNode) return;
+    const target = findLookupPriceMountTarget(form);
+    if (!target || !target.anchor || !target.anchor.parentNode) return;
 
     const existing = form.querySelector("[" + LOOKUP_PRICE_ROOT_ATTR + "]");
     if (existing) {
-        /* Move a previously misplaced mount into the Total column gap. */
-        if (existing.previousElementSibling !== anchor) {
-            anchor.insertAdjacentElement("afterend", existing);
+        const correctlyPlaced =
+            (target.placement === "afterend" && existing.previousElementSibling === target.anchor) ||
+            (target.placement === "beforeend" && existing.parentNode === target.anchor);
+        if (correctlyPlaced || existing.contains(target.anchor) || existing === target.anchor) {
+            return;
+        }
+        if (target.placement === "afterend") {
+            target.anchor.insertAdjacentElement("afterend", existing);
+        } else {
+            target.anchor.appendChild(existing);
         }
         return;
     }
 
     ensureLookupPriceStyles();
     const ui = createLookupPriceUi(form);
-    anchor.insertAdjacentElement("afterend", ui.root);
+    if (target.placement === "afterend") {
+        target.anchor.insertAdjacentElement("afterend", ui.root);
+    } else {
+        target.anchor.appendChild(ui.root);
+    }
+    console.log("[Quartzy Bridge] Lookup Price mounted on add-request form");
 }
 
 function scanAndMountLookupPrice() {
     if (!isLookupPriceEnabled() || !isAddRequestPage()) return;
     const forms = document.querySelectorAll(".request-form");
+    if (!forms.length) return;
     forms.forEach(function (form) {
         if (getUnitPriceInput(form)) {
             mountLookupPriceOnForm(form);
@@ -1110,27 +1167,46 @@ function scanAndMountLookupPrice() {
     });
 }
 
-function initLookupPriceOnAddRequest() {
-    if (!isLookupPriceEnabled()) return;
-
-    let lastPath = location.pathname;
+/**
+ * Ember SPA navigations do not always reload the document. Observe history + DOM.
+ * @param {() => void} onChange
+ * @param {number} [intervalMs]
+ */
+function watchQuartzyDomAndRoute(onChange, intervalMs) {
+    let scheduled = false;
     const tick = function () {
-        const onPage = isAddRequestPage();
-        if (location.pathname !== lastPath) {
-            lastPath = location.pathname;
-        }
-        if (onPage) {
-            ensureLookupPriceStyles();
-            scanAndMountLookupPrice();
-        }
+        scheduled = false;
+        onChange();
+    };
+    const schedule = function () {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(tick);
     };
 
     tick();
-    const obs = new MutationObserver(function () {
-        tick();
-    });
-    obs.observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(tick, 1500);
+    const obs = new MutationObserver(schedule);
+    if (document.documentElement) {
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+    }
+    setInterval(tick, intervalMs || 1500);
+
+    try {
+        const wrapHistory = function (method) {
+            const orig = history[method];
+            if (typeof orig !== "function") return;
+            history[method] = function () {
+                const ret = orig.apply(this, arguments);
+                schedule();
+                return ret;
+            };
+        };
+        wrapHistory("pushState");
+        wrapHistory("replaceState");
+        window.addEventListener("popstate", schedule);
+    } catch (e) {
+        /* ignore */
+    }
 }
 
 /* —— Add to vendor site (Order Requests IDP + Group Actions) —— */
@@ -1139,7 +1215,7 @@ const ATV_STYLE_ID = "qc-add-to-vendor-style";
 const ATV_IDP_BTN_ID = "order-request-add-to-vendor-site";
 const ATV_GROUP_BTN_ID = "order-request-group-action-add-to-vendor-site";
 const ATV_TOAST_ID = "qc-atv-toast";
-const REQUESTS_PATH_RE = /^\/groups\/\d+\/requests(?:\/|$)/i;
+const REQUESTS_PATH_RE = /^\/groups\/[^/]+\/requests(?:\/|$)/i;
 
 function isAddToVendorSiteEnabled() {
     return typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" && QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true;
@@ -1511,7 +1587,9 @@ function injectIdpAddToVendorButton() {
     const menu =
         panel.querySelector(".main-panel-header .right-column .cta .menu") ||
         panel.querySelector(".cta .menu") ||
-        panel.querySelector(".main-panel-header .cta");
+        panel.querySelector(".main-panel-header .cta") ||
+        panel.querySelector(".main-panel-header .right-column") ||
+        panel.querySelector(".main-panel-header");
     if (!menu) return;
 
     const btn = document.createElement("button");
@@ -1536,6 +1614,7 @@ function injectIdpAddToVendorButton() {
     } else {
         menu.insertBefore(btn, menu.firstChild);
     }
+    console.log("[Quartzy Bridge] Add to vendor site (IDP) mounted");
 }
 
 function findGroupActionsMenuList() {
@@ -1608,6 +1687,7 @@ function injectGroupAddToVendorButton() {
     } else {
         list.appendChild(li);
     }
+    console.log("[Quartzy Bridge] Add to vendor site (Group Actions) mounted");
 }
 
 function scanAndInjectAddToVendorControls() {
@@ -1615,40 +1695,5 @@ function scanAndInjectAddToVendorControls() {
     ensureAddToVendorStyles();
     injectIdpAddToVendorButton();
     injectGroupAddToVendorButton();
-}
-
-function initAddToVendorSite() {
-    if (!isAddToVendorSiteEnabled()) return;
-
-    let scheduled = false;
-    const tick = function () {
-        scheduled = false;
-        scanAndInjectAddToVendorControls();
-    };
-    const schedule = function () {
-        if (scheduled) return;
-        scheduled = true;
-        requestAnimationFrame(tick);
-    };
-
-    tick();
-    const obs = new MutationObserver(function () {
-        schedule();
-    });
-    obs.observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(tick, 2000);
-
-    document.addEventListener(
-        "click",
-        function (e) {
-            const t = e.target;
-            if (!t || !t.closest) return;
-            if (t.closest("#order-request-group-actions")) {
-                setTimeout(scanAndInjectAddToVendorControls, 50);
-                setTimeout(scanAndInjectAddToVendorControls, 250);
-            }
-        },
-        true
-    );
 }
 

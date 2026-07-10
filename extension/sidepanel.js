@@ -2055,6 +2055,7 @@ function renderAtcDebug(result) {
       qty: result.qty || null,
       url: result.url || null,
       method: result.method || null,
+      execution: result.execution || (result.debug && result.debug.execution) || null,
       tokenCookie: result.tokenCookie || null
     },
     responseBody: result.responseBody || result.responsePreview || null,
@@ -2073,6 +2074,7 @@ function renderAtcDebug(result) {
     const lines = [
       "ok: " + String(!!result.ok),
       "status: " + (result.status != null ? result.status : "—"),
+      "execution: " + (result.execution || (result.debug && result.debug.execution) || "—"),
       "vendor: " + (result.vendorId || "—"),
       "sku: " + (result.sku || "—"),
       "token cookie: " + (result.tokenCookie || "—"),
@@ -2165,7 +2167,7 @@ function onAtcRunClick() {
   }
   atcInFlight = true;
   atcRunBtn.disabled = true;
-  setAtcStatus("Calling vendor cart API…", "loading");
+  setAtcStatus("Adding via vendor page (page fetch / click fallback)…", "loading");
   renderAtcDebug(null);
 
   chrome.runtime.sendMessage(
@@ -2186,10 +2188,13 @@ function onAtcRunClick() {
       const result = response || { ok: false, error: "empty", errorMessage: "No response" };
       renderAtcDebug(result);
       if (result.ok) {
-        setAtcStatus(
-          "Added to vendor cart (HTTP " + (result.status != null ? result.status : "ok") + ").",
-          ""
-        );
+        const via =
+          result.execution === "dom_click"
+            ? "via page Add to cart click"
+            : result.execution === "page_fetch"
+              ? "via page-context fetch"
+              : "HTTP " + (result.status != null ? result.status : "ok");
+        setAtcStatus("Added to vendor cart (" + via + ").", "");
       } else {
         setAtcStatus(result.errorMessage || result.error || "Add to cart failed", "error");
       }

@@ -2935,19 +2935,32 @@ function qzcNodeMayAddJsonLd(n) {
 /* —— Cart API mapping: page-world fetch/XHR hook bridge —— */
 const QZC_CART_HOOK_SOURCE = "quartzy-cart-hook";
 const QZC_CART_HOOK_SCRIPT_ID = "quartzy-cart-capture-hook";
+const QZC_CART_HOOK_VERSION = "v2";
 let qzcCartHookInjected = false;
 let qzcCartMappingActive = false;
+/** @type {Map<string, { resolve: Function, timer: ReturnType<typeof setTimeout>|null }>} */
+const qzcCartPagePending = new Map();
+let qzcCartPageSeq = 0;
 
 function qzcEnsureCartCaptureHook(onReady) {
-  if (document.getElementById(QZC_CART_HOOK_SCRIPT_ID)) {
+  const existing = document.getElementById(QZC_CART_HOOK_SCRIPT_ID);
+  if (existing && existing.getAttribute("data-qzc-version") === QZC_CART_HOOK_VERSION) {
     qzcCartHookInjected = true;
     if (typeof onReady === "function") onReady();
     return true;
   }
+  if (existing) {
+    try {
+      existing.remove();
+    } catch (eRem) {
+      /* ignore */
+    }
+  }
   try {
     const s = document.createElement("script");
     s.id = QZC_CART_HOOK_SCRIPT_ID;
-    s.src = chrome.runtime.getURL("cartCaptureHook.js");
+    s.setAttribute("data-qzc-version", QZC_CART_HOOK_VERSION);
+    s.src = chrome.runtime.getURL("cartCaptureHook.js") + "?v=" + QZC_CART_HOOK_VERSION;
     s.async = false;
     s.onload = function () {
       qzcCartHookInjected = true;
@@ -2964,6 +2977,77 @@ function qzcEnsureCartCaptureHook(onReady) {
     if (typeof onReady === "function") onReady(false);
     return false;
   }
+}
+
+/**
+ * @returns {Promise<boolean>}
+ */
+function qzcEnsureCartCaptureHookAsync() {
+  return new Promise(function (resolve) {
+    const existing = document.getElementById(QZC_CART_HOOK_SCRIPT_ID);
+    if (
+      qzcCartHookInjected &&
+      existing &&
+      existing.getAttribute("data-qzc-version") === QZC_CART_HOOK_VERSION
+    ) {
+      resolve(true);
+      return;
+    }
+    qzcEnsureCartCaptureHook(function (ok) {
+      resolve(ok !== false);
+    });
+  });
+}
+
+/**
+ * Ask the page-world hook to run a same-origin cart fetch or DOM click.
+ * @param {string} type
+ * @param {object} payload
+ * @param {number} [timeoutMs]
+ * @returns {Promise<object>}
+ */
+function qzcAskPageWorld(type, payload, timeoutMs) {
+  const requestId = "qzc_cart_" + ++qzcCartPageSeq + "_" + Date.now();
+  const waitMs = timeoutMs != null ? timeoutMs : 20000;
+  return qzcEnsureCartCaptureHookAsync().then(function (ready) {
+    if (!ready) {
+      return {
+        ok: false,
+        error: "hook_missing",
+        errorMessage: "Could not inject page-world cart helper."
+      };
+    }
+    return new Promise(function (resolve) {
+      const timer = setTimeout(function () {
+        qzcCartPagePending.delete(requestId);
+        resolve({
+          ok: false,
+          error: "timeout",
+          errorMessage: "Timed out waiting for page-world cart action.",
+          pageUrl: location.href
+        });
+      }, waitMs);
+      qzcCartPagePending.set(requestId, { resolve: resolve, timer: timer });
+      try {
+        window.postMessage(
+          {
+            source: QZC_CART_HOOK_SOURCE,
+            type: type,
+            payload: Object.assign({}, payload || {}, { requestId: requestId })
+          },
+          "*"
+        );
+      } catch (e) {
+        clearTimeout(timer);
+        qzcCartPagePending.delete(requestId);
+        resolve({
+          ok: false,
+          error: "postmessage_failed",
+          errorMessage: (e && e.message) || "postMessage failed."
+        });
+      }
+    });
+  });
 }
 
 function qzcSetCartMappingActive(on) {
@@ -3010,6 +3094,17 @@ window.addEventListener("message", function (event) {
     } catch (e) {
       /* ignore */
     }
+    return;
+  }
+  if (
+    (data.type === "QUARTZY_CART_PAGE_FETCH_RESULT" || data.type === "QUARTZY_CART_CLICK_RESULT") &&
+    data.requestId
+  ) {
+    const pending = qzcCartPagePending.get(data.requestId);
+    if (!pending) return;
+    qzcCartPagePending.delete(data.requestId);
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve(data.payload || {});
   }
 });
 
@@ -3023,5 +3118,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     qzcSetCartMappingActive(false);
     sendResponse({ success: true, active: false });
     return;
+  }
+  if (message.type === "VENDOR_CART_PAGE_FETCH") {
+    qzcAskPageWorld("QUARTZY_CART_PAGE_FETCH", {
+      method: message.method,
+      url: message.url,
+      headers: message.headers || {},
+      body: message.body != null ? message.body : null
+    })
+      .then(function (result) {
+        sendResponse(result);
+      })
+      .catch(function (e) {
+        sendResponse({
+          ok: false,
+          error: "unexpected",
+          errorMessage: (e && e.message) || "Page fetch failed."
+        });
+      });
+    return true;
+  }
+  if (message.type === "VENDOR_CART_CLICK_ATC") {
+    qzcAskPageWorld("QUARTZY_CART_CLICK_ATC", {
+      qty: message.qty || "1",
+      sku: message.sku || ""
+    })
+      .then(function (result) {
+        sendResponse(result);
+      })
+      .catch(function (e) {
+        sendResponse({
+          ok: false,
+          error: "unexpected",
+          errorMessage: (e && e.message) || "Click add-to-cart failed."
+        });
+      });
+    return true;
   }
 });

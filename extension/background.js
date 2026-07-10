@@ -761,9 +761,18 @@ function scrubStaleCartHeaders(headers) {
 
 /**
  * @param {string} url
+ * @param {string} [pageUrl] Prefer product-page Referer when available.
  * @returns {{ origin: string, referer: string }}
  */
-function vendorOriginReferer(url) {
+function vendorOriginReferer(url, pageUrl) {
+  try {
+    if (pageUrl) {
+      const p = new URL(pageUrl);
+      return { origin: p.origin, referer: p.href };
+    }
+  } catch (e0) {
+    /* fall through */
+  }
   try {
     const u = new URL(url);
     return { origin: u.origin, referer: u.origin + "/" };
@@ -796,7 +805,409 @@ function serializeCartPayload(template, headers) {
 }
 
 /**
- * Execute a saved vendorCartConfigs add_to_cart mapping with the user's session cookies.
+ * @param {string} responseText
+ * @param {Record<string,string>|null|undefined} responseHeaders
+ * @returns {boolean}
+ */
+function looksLikeAkamaiBlock(responseText, responseHeaders) {
+  const body = String(responseText || "");
+  const server =
+    (responseHeaders && (responseHeaders.server || responseHeaders.Server)) || "";
+  if (/akamai/i.test(server)) return true;
+  if (/Access Denied/i.test(body) && /edgesuite\.net|AkamaiGHost|Reference\s*#/i.test(body)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Hostnames that match a vendor cart config (domain_matchers or known vendor ids).
+ * @param {object} cfg
+ * @param {string} vendorId
+ * @returns {string[]}
+ */
+function vendorHostHints(cfg, vendorId) {
+  const hints = [];
+  const matchers = (cfg && cfg.domain_matchers) || [];
+  for (let i = 0; i < matchers.length; i++) {
+    const m = String(matchers[i] || "");
+    const host = m
+      .replace(/^\*:\/\//, "")
+      .replace(/\/\*$/, "")
+      .replace(/^\*\./, "")
+      .replace(/^\./, "");
+    if (host && hints.indexOf(host) === -1) hints.push(host);
+  }
+  const known = {
+    fisher: ["fishersci.com"],
+    thermo: ["thermofisher.com", "fishersci.com"],
+    vwr: ["vwr.com", "us.vwr.com", "avantorsciences.com"],
+    sigma: ["sigmaaldrich.com", "milliporesigma.com"],
+    abcam: ["abcam.com"],
+    thomas: ["thomasci.com"]
+  };
+  const extra = known[vendorId] || [];
+  for (let j = 0; j < extra.length; j++) {
+    if (hints.indexOf(extra[j]) === -1) hints.push(extra[j]);
+  }
+  return hints;
+}
+
+/**
+ * @param {string} host
+ * @param {string[]} hints
+ * @returns {boolean}
+ */
+function hostMatchesVendorHints(host, hints) {
+  const h = String(host || "")
+    .toLowerCase()
+    .replace(/^www\./, "");
+  if (!h) return false;
+  for (let i = 0; i < hints.length; i++) {
+    const hint = String(hints[i] || "")
+      .toLowerCase()
+      .replace(/^www\./, "");
+    if (!hint) continue;
+    if (h === hint || h.endsWith("." + hint)) return true;
+  }
+  return false;
+}
+
+/**
+ * Build a best-effort product URL for click-to-cart.
+ * @param {object} opts
+ * @returns {string}
+ */
+function vendorProductUrlForSku(opts) {
+  const productUrl = String((opts && opts.productUrl) || "").trim();
+  if (productUrl) return productUrl;
+  const sku = String((opts && opts.sku) || "").trim();
+  const hints = ((opts && opts.hints) || []).join(" ");
+  if (sku && /fishersci|fisher/i.test(hints)) {
+    return "https://www.fishersci.com/shop/products/" + encodeURIComponent(sku);
+  }
+  return "";
+}
+
+/**
+ * Before DOM click, ensure the tab is on a product page for this SKU.
+ * @param {object} opts
+ * @returns {Promise<{ tabId: number, pageUrl: string, created: boolean, reused: boolean }|null>}
+ */
+async function ensureVendorProductTabForClick(opts) {
+  const tabInfo = opts.tabInfo;
+  const sku = String(opts.sku || "").trim();
+  const productUrl = vendorProductUrlForSku(opts);
+  if (!tabInfo || tabInfo.tabId == null) {
+    if (!productUrl) return null;
+    return findOrOpenVendorCartTab({
+      hints: opts.hints || [],
+      productUrl: productUrl,
+      apiUrl: opts.apiUrl || "",
+      sku: sku
+    });
+  }
+  const pageUrl = String(tabInfo.pageUrl || "");
+  const looksLikePdp =
+    /\/shop\/products\//i.test(pageUrl) ||
+    /\/product\//i.test(pageUrl) ||
+    (sku && pageUrl.toLowerCase().indexOf(sku.toLowerCase()) !== -1);
+  if (looksLikePdp) return tabInfo;
+  if (!productUrl) return tabInfo;
+  try {
+    await chrome.tabs.update(tabInfo.tabId, { url: productUrl });
+    await waitForTabComplete(tabInfo.tabId, 25000);
+    await new Promise(function (r) {
+      setTimeout(r, 1500);
+    });
+    let nextUrl = productUrl;
+    try {
+      const t = await chrome.tabs.get(tabInfo.tabId);
+      if (t && t.url) nextUrl = t.url;
+    } catch (e) {
+      /* ignore */
+    }
+    return {
+      tabId: tabInfo.tabId,
+      pageUrl: nextUrl,
+      created: !!tabInfo.created,
+      reused: !!tabInfo.reused
+    };
+  } catch (e2) {
+    return tabInfo;
+  }
+}
+
+/**
+ * Prefer an existing open vendor tab; otherwise open a product/home tab.
+ * @param {object} opts
+ * @returns {Promise<{ tabId: number, pageUrl: string, created: boolean, reused: boolean }|null>}
+ */
+async function findOrOpenVendorCartTab(opts) {
+  const hints = opts.hints || [];
+  const productUrl = String(opts.productUrl || "").trim();
+  const apiUrl = String(opts.apiUrl || "").trim();
+  let origin = "";
+  try {
+    origin = new URL(apiUrl || productUrl).origin;
+  } catch (e) {
+    origin = "";
+  }
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (e2) {
+    tabs = [];
+  }
+
+  let best = null;
+  for (let i = 0; i < tabs.length; i++) {
+    const t = tabs[i];
+    if (!t || t.id == null || !t.url) continue;
+    let host = "";
+    try {
+      host = new URL(t.url).hostname;
+    } catch (e3) {
+      continue;
+    }
+    if (!hostMatchesVendorHints(host, hints)) continue;
+    const score =
+      (productUrl && t.url.indexOf(encodeURIComponent(opts.sku || "")) !== -1 ? 30 : 0) +
+      (/\/shop\/products\//i.test(t.url) || /\/product\//i.test(t.url) ? 20 : 0) +
+      (t.active ? 5 : 0) +
+      (t.status === "complete" ? 2 : 0);
+    if (!best || score > best.score) {
+      best = { tabId: t.id, pageUrl: t.url, score: score, created: false, reused: true };
+    }
+  }
+  if (best) return best;
+
+  let openUrl = productUrl;
+  if (!openUrl && opts.sku && /fishersci|fisher/i.test(hints.join(" "))) {
+    openUrl = "https://www.fishersci.com/shop/products/" + encodeURIComponent(opts.sku);
+  }
+  if (!openUrl && origin) {
+    openUrl = origin + "/";
+  }
+  if (!openUrl) return null;
+
+  try {
+    const tab = await chrome.tabs.create({ url: openUrl, active: false });
+    if (!tab || tab.id == null) return null;
+    await waitForTabComplete(tab.id, 25000);
+    /* Give Akamai sensor JS a moment to mint cookies. */
+    await new Promise(function (r) {
+      setTimeout(r, 1500);
+    });
+    let pageUrl = openUrl;
+    try {
+      const t2 = await chrome.tabs.get(tab.id);
+      if (t2 && t2.url) pageUrl = t2.url;
+    } catch (e4) {
+      /* ignore */
+    }
+    return { tabId: tab.id, pageUrl: pageUrl, created: true, reused: false };
+  } catch (e5) {
+    return null;
+  }
+}
+
+/**
+ * @param {number} tabId
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise(function (resolve) {
+    let done = false;
+    const finish = function () {
+      if (done) return;
+      done = true;
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch (e) {
+        /* ignore */
+      }
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs || 20000);
+    function onUpdated(id, info) {
+      if (id !== tabId) return;
+      if (info && info.status === "complete") {
+        clearTimeout(timer);
+        finish();
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.get(tabId).then(function (t) {
+      if (t && t.status === "complete") {
+        clearTimeout(timer);
+        finish();
+      }
+    }).catch(function () {
+      /* wait for event / timeout */
+    });
+  });
+}
+
+/**
+ * @param {number} tabId
+ * @param {object} message
+ * @param {number} [attempts]
+ * @returns {Promise<object|null>}
+ */
+async function sendMessageToTabWithRetry(tabId, message, attempts) {
+  const max = attempts != null ? attempts : 5;
+  let lastErr = null;
+  for (let i = 0; i < max; i++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      if (response) return response;
+    } catch (e) {
+      lastErr = e;
+    }
+    await new Promise(function (r) {
+      setTimeout(r, 400);
+    });
+  }
+  return {
+    ok: false,
+    error: "content_unavailable",
+    errorMessage:
+      (lastErr && lastErr.message) ||
+      "Vendor page content script unavailable. Reload the vendor tab and retry."
+  };
+}
+
+/**
+ * Evaluate success_indicator against an HTTP response.
+ * @param {object} atc
+ * @param {number} status
+ * @param {string} responseText
+ * @returns {{ ok: boolean, jsonPathOk: boolean }}
+ */
+function evaluateCartSuccess(atc, status, responseText) {
+  const success = (atc && atc.success_indicator) || {};
+  const expectedStatus = success.status_code != null ? Number(success.status_code) : null;
+  let ok = status >= 200 && status < 300;
+  if (expectedStatus != null) {
+    ok =
+      status === expectedStatus ||
+      (expectedStatus >= 200 && expectedStatus < 300 && status >= 200 && status < 300);
+  }
+  let jsonPathOk = true;
+  const jsonPath = success.json_path;
+  if (jsonPath && String(jsonPath).trim()) {
+    try {
+      const parsed = JSON.parse(responseText);
+      const path = String(jsonPath)
+        .replace(/^\$\.?/, "")
+        .split(".");
+      let cur = parsed;
+      for (let i = 0; i < path.length; i++) {
+        if (cur == null) break;
+        cur = cur[path[i]];
+      }
+      if (Object.prototype.hasOwnProperty.call(success, "expected_value")) {
+        jsonPathOk = cur === success.expected_value;
+      } else {
+        jsonPathOk = !!cur;
+      }
+      ok = ok && jsonPathOk;
+    } catch (e3) {
+      jsonPathOk = false;
+      ok = false;
+    }
+  }
+  return { ok: ok, jsonPathOk: jsonPathOk };
+}
+
+/**
+ * @param {object} opts
+ * @returns {object}
+ */
+function buildCartOutcome(opts) {
+  const status = opts.status != null ? Number(opts.status) : null;
+  const responseFull = String(opts.responseText || "");
+  const responseHeaders = opts.responseHeaders || {};
+  const token = opts.token || null;
+  const success = (opts.atc && opts.atc.success_indicator) || {};
+  const evaluated = evaluateCartSuccess(opts.atc, status != null ? status : 0, responseFull);
+  let ok = opts.forceOk === true ? true : evaluated.ok;
+  if (opts.forceOk === false) ok = false;
+
+  const akamai = looksLikeAkamaiBlock(responseFull, responseHeaders);
+  let errorMessage = opts.errorMessage || null;
+  let error = opts.error || null;
+  if (!ok && !errorMessage) {
+    if (akamai || status === 403) {
+      error = akamai ? "akamai_blocked" : "forbidden";
+      errorMessage = akamai
+        ? "Akamai blocked the cart request (edge Access Denied). Retrying via the vendor page / Add to cart click when possible."
+        : "Vendor cart API returned HTTP 403 (forbidden). Usually a stale/missing CSRF token or logged-out session — open the vendor site logged in, re-run Cart mapping if needed, then retry." +
+          (token ? " (refreshed token from cookie " + token.cookieName + ")" : " (no CSRF cookie found)");
+    } else if (status != null) {
+      error = "cart_rejected";
+      errorMessage =
+        "Vendor cart API returned HTTP " +
+        status +
+        (evaluated.jsonPathOk ? "" : " (success path mismatch)") +
+        ".";
+    }
+  }
+
+  return {
+    ok: ok,
+    vendorId: opts.vendorId,
+    sku: opts.sku,
+    qty: opts.qty,
+    url: opts.url,
+    method: opts.method,
+    status: status,
+    tokenCookie: token ? token.cookieName : null,
+    responsePreview: responseFull.slice(0, 800),
+    responseBody: responseFull.slice(0, 50000),
+    error: ok ? null : error || "cart_rejected",
+    errorMessage: ok ? null : errorMessage,
+    execution: opts.execution || null,
+    debug: {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      request: {
+        vendorId: opts.vendorId,
+        sku: opts.sku,
+        qty: opts.qty,
+        method: opts.method,
+        url: opts.url,
+        headers: opts.debugRequestHeaders || {},
+        bodyPreview: opts.bodyPreview != null ? String(opts.bodyPreview).slice(0, 4000) : null,
+        pageUrl: opts.pageUrl || null
+      },
+      token: token
+        ? { found: true, cookieName: token.cookieName, headerName: token.name }
+        : {
+            found: false,
+            required: !!(opts.atc && opts.atc.token_extraction && opts.atc.token_extraction.required)
+          },
+      response: {
+        status: status,
+        ok: ok,
+        headers: responseHeaders,
+        body: responseFull.slice(0, 50000)
+      },
+      successIndicator: success,
+      jsonPathOk: evaluated.jsonPathOk,
+      akamaiBlocked: akamai,
+      execution: opts.execution || null,
+      attempts: opts.attempts || null
+    }
+  };
+}
+
+/**
+ * Execute a saved vendorCartConfigs add_to_cart mapping.
+ * Prefers page-context fetch on a vendor tab (bypasses Akamai SW blocks), then DOM click.
  * @param {object} message
  * @returns {Promise<object>}
  */
@@ -813,6 +1224,7 @@ async function runAddToVendorCart(message) {
   const vendorId = String((message && message.vendorId) || "")
     .trim()
     .toLowerCase();
+  const productUrlHint = String((message && message.productUrl) || "").trim();
   if (!sku) {
     return { ok: false, error: "missing_sku", errorMessage: "Catalog / SKU is required." };
   }
@@ -846,9 +1258,6 @@ async function runAddToVendorCart(message) {
   }
   const url = String(substituteCartPlaceholders(urlTemplate, sku, qty));
   const headers = scrubStaleCartHeaders(Object.assign({}, atc.headers || {}));
-  const site = vendorOriginReferer(url);
-  if (site.origin && !headers.Origin && !headers.origin) headers.Origin = site.origin;
-  if (site.referer && !headers.Referer && !headers.referer) headers.Referer = site.referer;
   if (!headers["X-Requested-With"] && !headers["x-requested-with"]) {
     headers["X-Requested-With"] = "XMLHttpRequest";
   }
@@ -856,7 +1265,6 @@ async function runAddToVendorCart(message) {
   const token = await resolveCartTokenHeader(atc.token_extraction, url);
   if (token) {
     headers[token.name] = token.value;
-    /* Some stacks expect both casings / both XSRF + CSRF header names. */
     const lower = token.name.toLowerCase();
     if (lower === "x-xsrf-token" && !headers["X-CSRF-TOKEN"] && !headers["x-csrf-token"]) {
       headers["X-CSRF-TOKEN"] = token.value;
@@ -899,148 +1307,229 @@ async function runAddToVendorCart(message) {
     }
   });
 
-  let res;
+  const hints = vendorHostHints(cfg, vendorId);
+  const tabInfo = await findOrOpenVendorCartTab({
+    hints: hints,
+    productUrl: productUrlHint,
+    apiUrl: url,
+    sku: sku
+  });
+
+  const attempts = [];
+  let createdTabId = tabInfo && tabInfo.created ? tabInfo.tabId : null;
+
   try {
-    const init = {
-      method: method,
-      headers: headers,
-      credentials: "include",
-      redirect: "follow"
-    };
-    if (method !== "GET" && method !== "HEAD" && serialized.body != null) {
-      init.body = serialized.body;
-    }
-    res = await fetch(url, init);
-  } catch (e) {
-    return {
-      ok: false,
-      error: "network",
-      errorMessage: (e && e.message) || "Network error calling vendor cart API.",
-      vendorId: vendorId,
-      url: url,
-      debug: {
-        version: 1,
-        generatedAt: new Date().toISOString(),
-        request: {
+    /* 1) Page-context fetch (real document Referer + Akamai cookies). */
+    if (tabInfo && tabInfo.tabId != null) {
+      const pageHeaders = Object.assign({}, headers);
+      delete pageHeaders.Origin;
+      delete pageHeaders.origin;
+      delete pageHeaders.Referer;
+      delete pageHeaders.referer;
+
+      const pageResult = await sendMessageToTabWithRetry(tabInfo.tabId, {
+        type: "VENDOR_CART_PAGE_FETCH",
+        method: method,
+        url: url,
+        headers: pageHeaders,
+        body: serialized.body
+      });
+      attempts.push({
+        mode: "page_fetch",
+        tabId: tabInfo.tabId,
+        pageUrl: (pageResult && pageResult.pageUrl) || tabInfo.pageUrl,
+        status: pageResult && pageResult.status,
+        error: pageResult && pageResult.error
+      });
+
+      if (pageResult && pageResult.error !== "content_unavailable" && pageResult.status != null) {
+        const outcome = buildCartOutcome({
+          atc: atc,
           vendorId: vendorId,
           sku: sku,
           qty: qty,
-          method: method,
           url: url,
-          headers: debugRequestHeaders,
-          bodyPreview: serialized.body != null ? String(serialized.body).slice(0, 2000) : null
-        },
-        token: token
-          ? { found: true, cookieName: token.cookieName, headerName: token.name }
-          : { found: false },
-        networkError: (e && e.message) || "fetch_failed"
+          method: method,
+          status: pageResult.status,
+          responseText: pageResult.responseBody || "",
+          responseHeaders: pageResult.responseHeaders || {},
+          token: token,
+          debugRequestHeaders: debugRequestHeaders,
+          bodyPreview: serialized.body,
+          pageUrl: pageResult.pageUrl || tabInfo.pageUrl,
+          execution: "page_fetch",
+          attempts: attempts
+        });
+        if (outcome.ok) return outcome;
+
+        /* 2) DOM click fallback when Akamai (or other) blocks the mapped API. */
+        if (outcome.debug && outcome.debug.akamaiBlocked) {
+          const clickTab = await ensureVendorProductTabForClick({
+            tabInfo: tabInfo,
+            productUrl: productUrlHint,
+            sku: sku,
+            hints: hints,
+            apiUrl: url
+          });
+          if (clickTab && clickTab.created) {
+            createdTabId = clickTab.tabId;
+          }
+          const clickTarget = clickTab || tabInfo;
+          const clickResult = await sendMessageToTabWithRetry(clickTarget.tabId, {
+            type: "VENDOR_CART_CLICK_ATC",
+            sku: sku,
+            qty: qty
+          });
+          attempts.push({
+            mode: "dom_click",
+            tabId: clickTarget.tabId,
+            pageUrl: (clickResult && clickResult.pageUrl) || clickTarget.pageUrl,
+            ok: !!(clickResult && clickResult.ok),
+            error: clickResult && clickResult.error,
+            buttonText: clickResult && clickResult.buttonText
+          });
+          if (clickResult && clickResult.ok) {
+            return {
+              ok: true,
+              vendorId: vendorId,
+              sku: sku,
+              qty: qty,
+              url: url,
+              method: "DOM_CLICK",
+              status: 200,
+              tokenCookie: token ? token.cookieName : null,
+              responsePreview: "Clicked Add to cart on vendor page.",
+              responseBody: "",
+              error: null,
+              errorMessage: null,
+              execution: "dom_click",
+              debug: {
+                version: 1,
+                generatedAt: new Date().toISOString(),
+                request: {
+                  vendorId: vendorId,
+                  sku: sku,
+                  qty: qty,
+                  method: "DOM_CLICK",
+                  url: url,
+                  pageUrl: clickResult.pageUrl || clickTarget.pageUrl,
+                  buttonText: clickResult.buttonText || null
+                },
+                token: token
+                  ? { found: true, cookieName: token.cookieName, headerName: token.name }
+                  : { found: false, required: !!(atc.token_extraction && atc.token_extraction.required) },
+                pageFetchBlocked: outcome,
+                attempts: attempts,
+                execution: "dom_click"
+              }
+            };
+          }
+          outcome.error = "akamai_blocked";
+          outcome.errorMessage =
+            "Akamai blocked the cart API, and clicking Add to cart on the vendor page also failed" +
+            (clickResult && clickResult.errorMessage ? ": " + clickResult.errorMessage : ".") +
+            " Open the product page logged in and retry.";
+          outcome.execution = "page_fetch_then_dom_click";
+          outcome.debug.attempts = attempts;
+          outcome.debug.domClick = clickResult || null;
+          return outcome;
+        }
+        return outcome;
       }
-    };
-  }
+    }
 
-  const status = res.status;
-  const responseHeaders = {};
-  try {
-    res.headers.forEach(function (v, k) {
-      responseHeaders[k] = v;
-    });
-  } catch (eHdr) {
-    /* ignore */
-  }
-  let responseText = "";
-  try {
-    responseText = await res.text();
-  } catch (e2) {
-    responseText = "";
-  }
-  const success = atc.success_indicator || {};
-  const expectedStatus = success.status_code != null ? Number(success.status_code) : null;
-  let ok = status >= 200 && status < 300;
-  if (expectedStatus != null) {
-    ok =
-      status === expectedStatus ||
-      (expectedStatus >= 200 && expectedStatus < 300 && status >= 200 && status < 300);
-  }
+    /* 3) Service-worker fetch fallback (vendors without Akamai). */
+    const site = vendorOriginReferer(url, tabInfo && tabInfo.pageUrl);
+    if (site.origin && !headers.Origin && !headers.origin) headers.Origin = site.origin;
+    if (site.referer && !headers.Referer && !headers.referer) headers.Referer = site.referer;
 
-  let jsonPathOk = true;
-  const jsonPath = success.json_path;
-  if (jsonPath && String(jsonPath).trim()) {
+    let res;
     try {
-      const parsed = JSON.parse(responseText);
-      const path = String(jsonPath)
-        .replace(/^\$\.?/, "")
-        .split(".");
-      let cur = parsed;
-      for (let i = 0; i < path.length; i++) {
-        if (cur == null) break;
-        cur = cur[path[i]];
-      }
-      if (Object.prototype.hasOwnProperty.call(success, "expected_value")) {
-        jsonPathOk = cur === success.expected_value;
-      } else {
-        jsonPathOk = !!cur;
-      }
-      ok = ok && jsonPathOk;
-    } catch (e3) {
-      jsonPathOk = false;
-      ok = false;
-    }
-  }
-
-  let errorMessage = null;
-  if (!ok) {
-    if (status === 403) {
-      errorMessage =
-        "Vendor cart API returned HTTP 403 (forbidden). Usually a stale/missing CSRF token or logged-out session — open the vendor site logged in, re-run Cart mapping if needed, then retry." +
-        (token ? " (refreshed token from cookie " + token.cookieName + ")" : " (no CSRF cookie found)");
-    } else {
-      errorMessage =
-        "Vendor cart API returned HTTP " +
-        status +
-        (jsonPathOk ? "" : " (success path mismatch)") +
-        ".";
-    }
-  }
-
-  const responseFull = String(responseText || "");
-  return {
-    ok: ok,
-    vendorId: vendorId,
-    sku: sku,
-    qty: qty,
-    url: url,
-    method: method,
-    status: status,
-    tokenCookie: token ? token.cookieName : null,
-    responsePreview: responseFull.slice(0, 800),
-    responseBody: responseFull.slice(0, 50000),
-    error: ok ? null : status === 403 ? "forbidden" : "cart_rejected",
-    errorMessage: errorMessage,
-    debug: {
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      request: {
-        vendorId: vendorId,
-        sku: sku,
-        qty: qty,
+      const init = {
         method: method,
+        headers: headers,
+        credentials: "include",
+        redirect: "follow"
+      };
+      if (method !== "GET" && method !== "HEAD" && serialized.body != null) {
+        init.body = serialized.body;
+      }
+      res = await fetch(url, init);
+    } catch (e) {
+      attempts.push({ mode: "service_worker_fetch", error: (e && e.message) || "fetch_failed" });
+      return {
+        ok: false,
+        error: "network",
+        errorMessage: (e && e.message) || "Network error calling vendor cart API.",
+        vendorId: vendorId,
         url: url,
-        headers: debugRequestHeaders,
-        bodyPreview: serialized.body != null ? String(serialized.body).slice(0, 4000) : null
-      },
-      token: token
-        ? { found: true, cookieName: token.cookieName, headerName: token.name }
-        : { found: false, required: !!(atc.token_extraction && atc.token_extraction.required) },
-      response: {
-        status: status,
-        ok: ok,
-        headers: responseHeaders,
-        body: responseFull.slice(0, 50000)
-      },
-      successIndicator: success,
-      jsonPathOk: jsonPathOk
+        execution: "service_worker_fetch",
+        debug: {
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          request: {
+            vendorId: vendorId,
+            sku: sku,
+            qty: qty,
+            method: method,
+            url: url,
+            headers: debugRequestHeaders,
+            bodyPreview: serialized.body != null ? String(serialized.body).slice(0, 2000) : null
+          },
+          token: token
+            ? { found: true, cookieName: token.cookieName, headerName: token.name }
+            : { found: false },
+          networkError: (e && e.message) || "fetch_failed",
+          attempts: attempts
+        }
+      };
     }
-  };
+
+    const responseHeaders = {};
+    try {
+      res.headers.forEach(function (v, k) {
+        responseHeaders[k] = v;
+      });
+    } catch (eHdr) {
+      /* ignore */
+    }
+    let responseText = "";
+    try {
+      responseText = await res.text();
+    } catch (e2) {
+      responseText = "";
+    }
+    attempts.push({ mode: "service_worker_fetch", status: res.status });
+    return buildCartOutcome({
+      atc: atc,
+      vendorId: vendorId,
+      sku: sku,
+      qty: qty,
+      url: url,
+      method: method,
+      status: res.status,
+      responseText: responseText,
+      responseHeaders: responseHeaders,
+      token: token,
+      debugRequestHeaders: debugRequestHeaders,
+      bodyPreview: serialized.body,
+      pageUrl: tabInfo && tabInfo.pageUrl,
+      execution: "service_worker_fetch",
+      attempts: attempts
+    });
+  } finally {
+    if (createdTabId != null) {
+      const tabToClose = createdTabId;
+      /* After a DOM click, give the page a moment to finish its own ATC XHR. */
+      setTimeout(function () {
+        try {
+          chrome.tabs.remove(tabToClose);
+        } catch (eClose) {
+          /* ignore */
+        }
+      }, 2500);
+    }
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
