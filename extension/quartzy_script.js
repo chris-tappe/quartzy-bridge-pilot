@@ -1230,49 +1230,76 @@ function isOrderRequestsPage() {
 }
 
 function ensureAddToVendorStyles() {
-    if (document.getElementById(ATV_STYLE_ID)) return;
-    const style = document.createElement("style");
-    style.id = ATV_STYLE_ID;
+    let style = document.getElementById(ATV_STYLE_ID);
+    if (!style) {
+        style = document.createElement("style");
+        style.id = ATV_STYLE_ID;
+        document.documentElement.appendChild(style);
+    }
+    /* Always rewrite so extension reloads pick up CSS fixes without a hard cache. */
     style.textContent = `
+/* IDP action row: center with Request Again / More (Quartzy .menu is display:flex) */
+.main-panel-header .menu:has(#${ATV_IDP_BTN_ID}),
+.details-panel-header .menu:has(#${ATV_IDP_BTN_ID}),
+.details-panel .menu:has(#${ATV_IDP_BTN_ID}) {
+  align-items: center !important;
+}
 #${ATV_IDP_BTN_ID} {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 6px 0 0;
-  padding: 6px 12px;
-  border: 1px solid #f75e2d;
-  border-radius: 4px;
-  background: #fff;
-  color: #f75e2d;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  line-height: 1.2;
-  cursor: pointer;
-  white-space: nowrap;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  align-self: center !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  /* margin-top is set in JS to match Request Again; do not !important it */
+  margin-right: 1rem !important;
+  margin-bottom: 0 !important;
+  margin-left: 0 !important;
+  padding: 1px 8px !important;
+  border: 1px solid #f75e2d !important;
+  border-radius: 3px !important;
+  background: #fff !important;
+  color: #f75e2d !important;
+  font-size: 0.875rem !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  line-height: 1.25 !important;
+  letter-spacing: normal !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  position: relative !important;
 }
 #${ATV_IDP_BTN_ID}:hover:not(:disabled) {
-  background: #fff7f3;
+  background: #fff7f3 !important;
 }
 #${ATV_IDP_BTN_ID}:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
 }
-#${ATV_GROUP_BTN_ID} {
+/* Fallback only — prefer cloned Quartzy status-button classes when present */
+#${ATV_GROUP_BTN_ID}:not([class]) {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: 1rem 1.5rem;
   border: none;
-  background: transparent;
-  color: #1f2937;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
+  background: #fff;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
-#${ATV_GROUP_BTN_ID}:hover:not(:disabled) {
-  background: #f3f4f6;
+#${ATV_GROUP_BTN_ID}:not([class]):hover:not(:disabled),
+#${ATV_GROUP_BTN_ID}:not([class]):focus:not(:disabled) {
+  background: #f7f7f7;
 }
 #${ATV_GROUP_BTN_ID}:disabled {
   opacity: 0.55;
@@ -1307,7 +1334,33 @@ function ensureAddToVendorStyles() {
   background: #14532d;
 }
 `;
-    document.documentElement.appendChild(style);
+}
+
+/**
+ * Quartzy’s .cta button { width:100% } + flex stretch can leave our outline
+ * button sitting on the top edge of the action row. Nudge it so its vertical
+ * center matches Request Again (or More).
+ */
+function alignIdpAddToVendorButton() {
+    const btn = document.getElementById(ATV_IDP_BTN_ID);
+    if (!btn || !btn.parentElement) return;
+    const menu = btn.parentElement;
+    const peer =
+        menu.querySelector(".re-request-link") ||
+        menu.querySelector(".more-dropdown .idp-actions-dropdown-button") ||
+        menu.querySelector(".more-dropdown button");
+    if (!peer) return;
+
+    btn.style.setProperty("margin-top", "0px");
+    const btnRect = btn.getBoundingClientRect();
+    const peerRect = peer.getBoundingClientRect();
+    if (!btnRect.height || !peerRect.height) return;
+
+    const delta =
+        peerRect.top + peerRect.height / 2 - (btnRect.top + btnRect.height / 2);
+    if (Math.abs(delta) >= 0.5) {
+        btn.style.setProperty("margin-top", Math.round(delta) + "px");
+    }
 }
 
 let atvToastTimer = null;
@@ -1582,11 +1635,16 @@ function injectIdpAddToVendorButton() {
         if (orphan) orphan.remove();
         return;
     }
-    if (document.getElementById(ATV_IDP_BTN_ID)) return;
+    const existing = document.getElementById(ATV_IDP_BTN_ID);
+    if (existing) {
+        alignIdpAddToVendorButton();
+        return;
+    }
 
     const menu =
         panel.querySelector(".main-panel-header .right-column .cta .menu") ||
         panel.querySelector(".cta .menu") ||
+        panel.querySelector(".main-panel-header .menu") ||
         panel.querySelector(".main-panel-header .cta") ||
         panel.querySelector(".main-panel-header .right-column") ||
         panel.querySelector(".main-panel-header");
@@ -1596,7 +1654,10 @@ function injectIdpAddToVendorButton() {
     btn.type = "button";
     btn.id = ATV_IDP_BTN_ID;
     btn.textContent = "Add to vendor site";
-    btn.title = "Add this request’s catalog # to the vendor cart (uses your mapped cart API)";
+    btn.setAttribute(
+        "aria-label",
+        "Add this request’s catalog # to the vendor cart (uses your mapped cart API)"
+    );
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
@@ -1612,9 +1673,20 @@ function injectIdpAddToVendorButton() {
     if (more && more.parentNode === menu) {
         menu.insertBefore(btn, more);
     } else {
-        menu.insertBefore(btn, menu.firstChild);
+        const reRequest = menu.querySelector(".re-request-link");
+        if (reRequest && reRequest.nextSibling) {
+            menu.insertBefore(btn, reRequest.nextSibling);
+        } else {
+            menu.appendChild(btn);
+        }
     }
     console.log("[Quartzy Bridge] Add to vendor site (IDP) mounted");
+    requestAnimationFrame(function () {
+        alignIdpAddToVendorButton();
+        requestAnimationFrame(alignIdpAddToVendorButton);
+    });
+    setTimeout(alignIdpAddToVendorButton, 50);
+    setTimeout(alignIdpAddToVendorButton, 250);
 }
 
 function findGroupActionsMenuList() {
@@ -1648,19 +1720,43 @@ function findGroupActionsMenuList() {
     return null;
 }
 
+/**
+ * Copy CSS-module class hashes from a native Group Actions row so our item
+ * matches Mark Ordered / Request Again / Export styling exactly.
+ * @param {Element} list
+ * @returns {{ liClass: string, btnClass: string }}
+ */
+function getGroupActionsSampleClasses(list) {
+    const sampleBtn =
+        list.querySelector("#order-request-group-action-request-again") ||
+        list.querySelector("#order-request-create-po") ||
+        Array.from(list.querySelectorAll("li button")).find(function (b) {
+            const t = String(b.textContent || "").trim();
+            return /^(request again|create po|export)/i.test(t);
+        });
+    const sampleLi = sampleBtn && sampleBtn.closest("li");
+    return {
+        liClass: sampleLi && sampleLi.className ? String(sampleLi.className) : "",
+        btnClass: sampleBtn && sampleBtn.className ? String(sampleBtn.className) : ""
+    };
+}
+
 function injectGroupAddToVendorButton() {
     if (document.getElementById(ATV_GROUP_BTN_ID)) return;
     const list = findGroupActionsMenuList();
     if (!list) return;
 
+    const sample = getGroupActionsSampleClasses(list);
     const li = document.createElement("li");
-    /* Match Ember list-item pattern without depending on CSS-module hashes */
     li.setAttribute("data-qc-atv-group-item", "1");
+    if (sample.liClass) li.className = sample.liClass;
+
     const btn = document.createElement("button");
     btn.type = "button";
     btn.id = ATV_GROUP_BTN_ID;
+    if (sample.btnClass) btn.className = sample.btnClass;
     btn.textContent = "Add to Vendor Site";
-    btn.title = "Add selected requests to their vendor carts";
+    btn.setAttribute("aria-label", "Add selected requests to their vendor carts");
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
