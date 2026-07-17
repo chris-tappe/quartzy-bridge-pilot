@@ -4,6 +4,12 @@ try {
   console.error("[Quartzy Connect] featureFlags import failed:", e);
 }
 
+try {
+  importScripts("cartGenerator.js");
+} catch (e) {
+  console.error("[Quartzy Connect] cartGenerator import failed:", e);
+}
+
 // Open side panel when the user clicks the extension icon (Manifest V3 sidePanel + action).
 try {
   chrome.sidePanel
@@ -24,7 +30,12 @@ const AI_EXTRACT_PROXY_URL = "";
 const FETCH_PRICE_TEST_ENABLED =
   typeof QUARTZY_FETCH_PRICE_TEST_ENABLED !== "undefined" && QUARTZY_FETCH_PRICE_TEST_ENABLED === true;
 
+/** Quick Order / Bulk Upload cart stuffing (CSV/XLSX file drop). */
+const CART_STUFFING_ENABLED =
+  typeof QUARTZY_CART_STUFFING_ENABLED !== "undefined" && QUARTZY_CART_STUFFING_ENABLED === true;
+
 const FETCH_PRICE_TIMEOUT_MS = 40000;
+const CART_STUFF_TAB_TIMEOUT_MS = 45000;
 
 /**
  * Known session-cookie name fragments per vendor hostname (extend over time).
@@ -659,6 +670,175 @@ function substituteCartPlaceholders(value, sku, qty) {
   return value;
 }
 
+const CART_SKU_KEY_RE =
+  /^(sku|catalog|catalognumber|catalog_number|productcode|product_code|productid|product_id|itemnumber|item_number|partnumber|part_number|material|matnr|code)$/i;
+const CART_QTY_KEY_RE = /^(qty|quantity|qtyordered|orderqty|amount|count)$/i;
+
+/**
+ * Innermost field name from a JSON path or flat form key.
+ * e.g. itemList[0][partNumber] → partNumber
+ * @param {string} path
+ * @returns {string}
+ */
+function bareCartFieldName(path) {
+  const key = String(path || "").split(".").pop() || "";
+  const segments = key.split(/[\[\]]+/).filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (!/^\d+$/.test(segments[i])) return segments[i];
+  }
+  return key.replace(/\[\d+\]/g, "");
+}
+
+/**
+ * @param {string} sku
+ * @returns {string}
+ */
+function stripSkuNonAlnum(sku) {
+  return String(sku || "").replace(/[^a-zA-Z0-9]/g, "");
+}
+
+/**
+ * Compare catalog numbers ignoring hyphens/spaces/case (Fisher 12-340-030 vs 12340030).
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function skuTokensMatch(a, b) {
+  const na = stripSkuNonAlnum(a).toLowerCase();
+  const nb = stripSkuNonAlnum(b).toLowerCase();
+  return !!(na && nb && na === nb);
+}
+
+/**
+ * Apply captured sku_transform (e.g. Fisher undashed partNumber).
+ * @param {string} sku
+ * @param {object} atc
+ * @returns {string}
+ */
+function transformSkuForCart(sku, atc) {
+  const raw = String(sku || "").trim();
+  if (!raw) return raw;
+  const meta = (atc && atc._meta) || {};
+  const transform =
+    (atc && atc.sku_transform) || meta.sku_transform || meta.skuTransform || null;
+  const sample = meta.sampleSku != null ? String(meta.sampleSku) : "";
+  if (
+    transform === "strip_non_alnum" ||
+    transform === "strip_hyphens" ||
+    (!transform && sample && /^[a-zA-Z0-9]+$/.test(sample))
+  ) {
+    return stripSkuNonAlnum(raw);
+  }
+  return raw;
+}
+
+/**
+ * Repair legacy cart payloads that still hardcode the captured part number
+ * (form keys like itemList[0][partNumber] were not recognized as {{SKU}}).
+ * @param {unknown} value
+ * @param {string} path
+ * @param {{sku?: string, qty?: string, repaired: boolean}} out
+ * @returns {unknown}
+ */
+function repairCartPayloadPlaceholders(value, path, out) {
+  if (value == null) return value;
+  if (Array.isArray(value)) {
+    return value.map(function (v, i) {
+      return repairCartPayloadPlaceholders(v, path + "[" + i + "]", out);
+    });
+  }
+  if (typeof value === "object") {
+    const next = {};
+    Object.keys(value).forEach(function (k) {
+      next[k] = repairCartPayloadPlaceholders(value[k], path ? path + "." + k : k, out);
+    });
+    return next;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const bare = bareCartFieldName(path);
+    const str = String(value);
+    if (str === "{{SKU}}" || str === "{{QTY}}") return value;
+    if (CART_SKU_KEY_RE.test(bare) && !out.sku) {
+      out.sku = str;
+      out.repaired = true;
+      return "{{SKU}}";
+    }
+    if (CART_QTY_KEY_RE.test(bare) && !out.qty) {
+      out.qty = str;
+      out.repaired = true;
+      return "{{QTY}}";
+    }
+  }
+  return value;
+}
+
+/**
+ * Ensure payload_template uses {{SKU}}/{{QTY}} and infer sku_transform from sample.
+ * @param {object} atc
+ * @returns {object} mutated atc (same reference)
+ */
+function prepareCartPayloadTemplate(atc) {
+  if (!atc || atc.payload_template == null) return atc;
+  const serialized = JSON.stringify(atc.payload_template);
+  const needsRepair = serialized.indexOf("{{SKU}}") === -1;
+  const meta = atc._meta || (atc._meta = {});
+  if (needsRepair) {
+    const out = { repaired: false };
+    atc.payload_template = repairCartPayloadPlaceholders(atc.payload_template, "", out);
+    if (out.sku && !meta.sampleSku) meta.sampleSku = out.sku;
+    if (out.qty && !meta.sampleQty) meta.sampleQty = out.qty;
+  }
+  if (!atc.sku_transform && !meta.sku_transform && !meta.skuTransform) {
+    const sample = meta.sampleSku != null ? String(meta.sampleSku) : "";
+    if (sample && /^[a-zA-Z0-9]+$/.test(sample)) {
+      atc.sku_transform = "strip_non_alnum";
+      meta.skuTransform = "strip_non_alnum";
+    }
+  }
+  return atc;
+}
+
+/**
+ * Confirm the cart response references the requested SKU (not a stale hardcoded part).
+ * @param {string} responseText
+ * @param {string} sku
+ * @returns {{ matched: boolean|null, seen: string[] }}
+ */
+function responseSkuMatch(responseText, sku) {
+  const text = String(responseText || "").trim();
+  if (!text || !sku) return { matched: null, seen: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return { matched: null, seen: [] };
+  }
+  const seen = [];
+  function pushPart(p) {
+    if (p == null || p === "") return;
+    const s = String(p);
+    if (seen.indexOf(s) === -1) seen.push(s);
+  }
+  if (Array.isArray(parsed.cartItemsPartNumbers)) {
+    parsed.cartItemsPartNumbers.forEach(pushPart);
+  }
+  const lists = [parsed.cartletItems, parsed.cartletItemsForAnalytics, parsed.items, parsed.cartItems];
+  for (let i = 0; i < lists.length; i++) {
+    const list = lists[i];
+    if (!Array.isArray(list)) continue;
+    for (let j = 0; j < list.length; j++) {
+      const row = list[j];
+      if (!row || typeof row !== "object") continue;
+      pushPart(row.partNumber || row.sku || row.catalogNumber || row.productCode);
+    }
+  }
+  if (!seen.length) return { matched: null, seen: seen };
+  for (let k = 0; k < seen.length; k++) {
+    if (skuTokensMatch(seen[k], sku)) return { matched: true, seen: seen };
+  }
+  return { matched: false, seen: seen };
+}
+
 /**
  * @param {string} cookieName
  * @param {string} url
@@ -1137,11 +1317,28 @@ function buildCartOutcome(opts) {
   let ok = opts.forceOk === true ? true : evaluated.ok;
   if (opts.forceOk === false) ok = false;
 
+  const skuCheck = responseSkuMatch(responseFull, opts.sku);
+  const skuMatched = skuCheck.matched;
+  if (skuMatched === false && opts.forceOk !== true) {
+    ok = false;
+  }
+
   const akamai = looksLikeAkamaiBlock(responseFull, responseHeaders);
   let errorMessage = opts.errorMessage || null;
   let error = opts.error || null;
   if (!ok && !errorMessage) {
-    if (akamai || status === 403) {
+    if (skuMatched === false) {
+      error = "sku_mismatch";
+      errorMessage =
+        "Vendor accepted the cart request but the response part number(s) [" +
+        (skuCheck.seen || []).join(", ") +
+        "] do not match requested SKU " +
+        opts.sku +
+        ". Re-map Add to cart on that product (legacy configs often hardcode the captured part number)." +
+        (opts.requestSku && opts.requestSku !== opts.sku
+          ? " Request sent partNumber=" + opts.requestSku + "."
+          : "");
+    } else if (akamai || status === 403) {
       error = akamai ? "akamai_blocked" : "forbidden";
       errorMessage = akamai
         ? "Akamai blocked the cart request (edge Access Denied). Retrying via the vendor page / Add to cart click when possible."
@@ -1177,6 +1374,7 @@ function buildCartOutcome(opts) {
       request: {
         vendorId: opts.vendorId,
         sku: opts.sku,
+        requestSku: opts.requestSku || opts.sku,
         qty: opts.qty,
         method: opts.method,
         url: opts.url,
@@ -1192,12 +1390,14 @@ function buildCartOutcome(opts) {
           },
       response: {
         status: status,
-        ok: ok,
+        ok: status >= 200 && status < 300,
         headers: responseHeaders,
         body: responseFull.slice(0, 50000)
       },
       successIndicator: success,
       jsonPathOk: evaluated.jsonPathOk,
+      skuMatch: skuMatched,
+      responsePartNumbers: skuCheck.seen,
       akamaiBlocked: akamai,
       execution: opts.execution || null,
       attempts: opts.attempts || null
@@ -1250,13 +1450,21 @@ async function runAddToVendorCart(message) {
     };
   }
 
-  const atc = cfg.add_to_cart;
+  const atc = prepareCartPayloadTemplate(cfg.add_to_cart);
+  /* Persist repaired {{SKU}} placeholders / sku_transform for next run. */
+  try {
+    all[vendorId] = cfg;
+    await chrome.storage.local.set({ [CART_CONFIGS_STORAGE_KEY]: all });
+  } catch (persistErr) {
+    /* non-fatal */
+  }
   const method = String(atc.method || "POST").toUpperCase();
   const urlTemplate = String(atc.url_template || "");
   if (!urlTemplate) {
     return { ok: false, error: "bad_config", errorMessage: "Cart config is missing url_template." };
   }
-  const url = String(substituteCartPlaceholders(urlTemplate, sku, qty));
+  const requestSku = transformSkuForCart(sku, atc);
+  const url = String(substituteCartPlaceholders(urlTemplate, requestSku, qty));
   const headers = scrubStaleCartHeaders(Object.assign({}, atc.headers || {}));
   if (!headers["X-Requested-With"] && !headers["x-requested-with"]) {
     headers["X-Requested-With"] = "XMLHttpRequest";
@@ -1284,14 +1492,21 @@ async function runAddToVendorCart(message) {
       debug: {
         version: 1,
         generatedAt: new Date().toISOString(),
-        request: { vendorId: vendorId, sku: sku, qty: qty, method: method, url: url },
+        request: {
+          vendorId: vendorId,
+          sku: sku,
+          requestSku: requestSku,
+          qty: qty,
+          method: method,
+          url: url
+        },
         token: { found: false, required: true },
         config: { hasAddToCart: true, urlTemplate: urlTemplate }
       }
     };
   }
 
-  const payloadTemplate = substituteCartPlaceholders(atc.payload_template || {}, sku, qty);
+  const payloadTemplate = substituteCartPlaceholders(atc.payload_template || {}, requestSku, qty);
   const serialized = serializeCartPayload(payloadTemplate, headers);
   if (serialized.contentType) {
     headers["Content-Type"] = serialized.contentType;
@@ -1347,6 +1562,7 @@ async function runAddToVendorCart(message) {
           atc: atc,
           vendorId: vendorId,
           sku: sku,
+          requestSku: requestSku,
           qty: qty,
           url: url,
           method: method,
@@ -1362,8 +1578,11 @@ async function runAddToVendorCart(message) {
         });
         if (outcome.ok) return outcome;
 
-        /* 2) DOM click fallback when Akamai (or other) blocks the mapped API. */
-        if (outcome.debug && outcome.debug.akamaiBlocked) {
+        /* 2) DOM click fallback when Akamai blocks or API added the wrong SKU. */
+        if (
+          (outcome.debug && outcome.debug.akamaiBlocked) ||
+          outcome.error === "sku_mismatch"
+        ) {
           const clickTab = await ensureVendorProductTabForClick({
             tabInfo: tabInfo,
             productUrl: productUrlHint,
@@ -1504,6 +1723,7 @@ async function runAddToVendorCart(message) {
       atc: atc,
       vendorId: vendorId,
       sku: sku,
+      requestSku: requestSku,
       qty: qty,
       url: url,
       method: method,
@@ -1529,6 +1749,194 @@ async function runAddToVendorCart(message) {
         }
       }, 2500);
     }
+  }
+}
+
+/**
+ * Inject vendorCartInjector.js into a tab (idempotent — injector self-guards).
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function injectVendorCartInjector(tabId) {
+  if (!chrome.scripting || typeof chrome.scripting.executeScript !== "function") {
+    throw new Error("chrome.scripting is unavailable; add the scripting permission.");
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    files: ["vendorCartInjector.js"]
+  });
+}
+
+/**
+ * Open the vendor Quick Order page, wait for load, inject CSV/XLSX into the file input.
+ *
+ * Call via runtime message:
+ *   { type: "PUSH_CART_TO_VENDOR", items: [...], vendorName: "fisher" }
+ *
+ * @param {Array<object>} items
+ * @param {string} vendorName
+ * @param {object} [opts]
+ * @returns {Promise<object>}
+ */
+async function pushCartToVendor(items, vendorName, opts) {
+  opts = opts || {};
+  if (!CART_STUFFING_ENABLED) {
+    return {
+      ok: false,
+      error: "feature_disabled",
+      errorMessage: "Cart stuffing is disabled."
+    };
+  }
+  if (typeof generateCartFile !== "function") {
+    return {
+      ok: false,
+      error: "generator_missing",
+      errorMessage: "cartGenerator.js failed to load in the service worker."
+    };
+  }
+
+  const vendorId =
+    typeof normalizeVendorId === "function"
+      ? normalizeVendorId(vendorName)
+      : String(vendorName || "")
+          .trim()
+          .toLowerCase();
+  if (!vendorId) {
+    return { ok: false, error: "missing_vendor", errorMessage: "vendorName is required." };
+  }
+
+  let file;
+  try {
+    file = generateCartFile(items, vendorId);
+  } catch (e) {
+    return {
+      ok: false,
+      error: "generate_failed",
+      errorMessage: (e && e.message) || "Could not generate vendor cart file.",
+      vendorId: vendorId
+    };
+  }
+
+  const openUrl = String(opts.quickOrderUrl || file.quickOrderUrl || "").trim();
+  if (!openUrl) {
+    return {
+      ok: false,
+      error: "missing_url",
+      errorMessage: "No Quick Order URL for vendor " + vendorId,
+      vendorId: vendorId
+    };
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: openUrl, active: opts.active !== false });
+  } catch (eCreate) {
+    return {
+      ok: false,
+      error: "tab_create_failed",
+      errorMessage: (eCreate && eCreate.message) || "Could not open vendor Quick Order tab.",
+      vendorId: vendorId
+    };
+  }
+  if (!tab || tab.id == null) {
+    return {
+      ok: false,
+      error: "tab_create_failed",
+      errorMessage: "No tab id from chrome.tabs.create.",
+      vendorId: vendorId
+    };
+  }
+
+  const tabId = tab.id;
+  try {
+    await waitForTabComplete(tabId, opts.timeoutMs || CART_STUFF_TAB_TIMEOUT_MS);
+    /* SPA shells often paint after status=complete — brief settle. */
+    await new Promise(function (r) {
+      setTimeout(r, opts.settleMs != null ? opts.settleMs : 1200);
+    });
+
+    await injectVendorCartInjector(tabId);
+
+    const payload = {
+      vendorId: file.vendorId,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      encoding: file.encoding,
+      body: file.body,
+      itemCount: file.itemCount,
+      autoSubmit: opts.autoSubmit !== false,
+      clickAddToCart: !!opts.clickAddToCart,
+      selectors: opts.selectors || null,
+      waitMs: opts.waitMs,
+      submitDelayMs: opts.submitDelayMs,
+      addToCartDelayMs: opts.addToCartDelayMs
+    };
+
+    let injectResult = null;
+    const maxAttempts = opts.injectAttempts != null ? opts.injectAttempts : 4;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        injectResult = await chrome.tabs.sendMessage(tabId, {
+          type: "QUARTZY_CART_STUFF",
+          payload: payload
+        });
+        if (injectResult && injectResult.ok) break;
+        if (injectResult && injectResult.error === "file_input_not_found" && attempt < maxAttempts - 1) {
+          await new Promise(function (r) {
+            setTimeout(r, 800);
+          });
+          continue;
+        }
+        if (injectResult) break;
+      } catch (eMsg) {
+        if (attempt === 0) {
+          await injectVendorCartInjector(tabId);
+        }
+        await new Promise(function (r) {
+          setTimeout(r, 500);
+        });
+        if (attempt === maxAttempts - 1) {
+          return {
+            ok: false,
+            error: "inject_message_failed",
+            errorMessage:
+              (eMsg && eMsg.message) ||
+              "Could not reach vendorCartInjector on the Quick Order tab.",
+            vendorId: file.vendorId,
+            tabId: tabId,
+            quickOrderUrl: openUrl,
+            filename: file.filename,
+            itemCount: file.itemCount
+          };
+        }
+      }
+    }
+
+    return {
+      ok: !!(injectResult && injectResult.ok),
+      vendorId: file.vendorId,
+      tabId: tabId,
+      quickOrderUrl: openUrl,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      itemCount: file.itemCount,
+      csvPreview: file.csvPreview,
+      inject: injectResult || null,
+      error: injectResult && !injectResult.ok ? injectResult.error : null,
+      errorMessage:
+        injectResult && !injectResult.ok
+          ? injectResult.errorMessage || "File injection did not succeed."
+          : null
+    };
+  } catch (eRun) {
+    return {
+      ok: false,
+      error: "unexpected",
+      errorMessage: (eRun && eRun.message) || "Cart stuffing failed.",
+      vendorId: file.vendorId,
+      tabId: tabId,
+      quickOrderUrl: openUrl
+    };
   }
 }
 
@@ -1629,6 +2037,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "ADD_TO_VENDOR_CART") {
     runAddToVendorCart(message)
+      .then(function (result) {
+        sendResponse(result);
+      })
+      .catch(function (e) {
+        sendResponse({
+          ok: false,
+          error: "unexpected",
+          errorMessage: (e && e.message) || "Unexpected error."
+        });
+      });
+    return true;
+  }
+
+  if (message.type === "PUSH_CART_TO_VENDOR" || message.type === "pushCartToVendor") {
+    pushCartToVendor(message.items, message.vendorName || message.vendorId || message.vendor, message)
       .then(function (result) {
         sendResponse(result);
       })

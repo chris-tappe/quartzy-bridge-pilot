@@ -1467,6 +1467,21 @@ function setCartMapStatus(message, kind) {
 }
 
 /**
+ * Innermost field name from a JSON path or flat form key.
+ * e.g. itemList[0][partNumber] → partNumber, itemList[0].quantity → quantity
+ * @param {string} path
+ * @returns {string}
+ */
+function bareFieldNameFromPath(path) {
+  const key = String(path || "").split(".").pop() || "";
+  const segments = key.split(/[\[\]]+/).filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (!/^\d+$/.test(segments[i])) return segments[i];
+  }
+  return key.replace(/\[\d+\]/g, "");
+}
+
+/**
  * @param {unknown} value
  * @param {string} path
  * @param {{sku?: string, qty?: string}} out
@@ -1486,8 +1501,7 @@ function walkTemplatePlaceholders(value, path, out) {
     return next;
   }
   if (typeof value === "string" || typeof value === "number") {
-    const key = path.split(".").pop() || "";
-    const bare = key.replace(/\[\d+\]/g, "");
+    const bare = bareFieldNameFromPath(path);
     if (CART_SKU_KEY_RE.test(bare) && !out.sku) {
       out.sku = String(value);
       return "{{SKU}}";
@@ -1614,6 +1628,46 @@ function urlToTemplate(url, samples) {
 
 /**
  * @param {object} capture
+ * @returns {{ json_path: string, expected_value: boolean|string|number|null }}
+ */
+function inferCartSuccessIndicator(capture) {
+  const preview = String(
+    (capture && (capture.responsePreview || capture.responseBody)) || ""
+  ).trim();
+  if (!preview || preview.charAt(0) !== "{") {
+    return { json_path: "", expected_value: true };
+  }
+  try {
+    const j = JSON.parse(preview);
+    if (typeof j.wasAdded === "boolean") {
+      return { json_path: "$.wasAdded", expected_value: true };
+    }
+    if (typeof j.success === "boolean") {
+      return { json_path: "$.success", expected_value: true };
+    }
+    if (typeof j.ok === "boolean") {
+      return { json_path: "$.ok", expected_value: true };
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return { json_path: "", expected_value: true };
+}
+
+/**
+ * When the captured part number is alphanumeric-only (e.g. Fisher 08774405 for
+ * catalog 08-774-405), replay should strip non-alphanumerics from {{SKU}}.
+ * @param {string|null|undefined} sampleSku
+ * @returns {string|null}
+ */
+function inferSkuTransform(sampleSku) {
+  const sample = String(sampleSku || "");
+  if (sample && /^[a-zA-Z0-9]+$/.test(sample)) return "strip_non_alnum";
+  return null;
+}
+
+/**
+ * @param {object} capture
  * @param {string} vendorId
  * @param {string} pageHost
  * @returns {object}
@@ -1632,6 +1686,8 @@ function buildAddToCartConfig(capture, vendorId, pageHost) {
   } else if (!headers["Content-Type"] && !headers["content-type"]) {
     headers["Content-Type"] = "application/json";
   }
+  const successHint = inferCartSuccessIndicator(capture);
+  const skuTransform = inferSkuTransform(payload.samples.sku);
   const cfg = {
     vendor_id: vendorId || "unknown",
     domain_matchers: domainMatchers,
@@ -1642,10 +1698,11 @@ function buildAddToCartConfig(capture, vendorId, pageHost) {
       token_extraction: token,
       headers: headers,
       payload_template: payload.template,
+      sku_transform: skuTransform,
       success_indicator: {
         status_code: status >= 200 && status < 300 ? status : 200,
-        json_path: "",
-        expected_value: true
+        json_path: successHint.json_path,
+        expected_value: successHint.expected_value
       },
       _meta: {
         capturedAt: capture.capturedAt || Date.now(),
@@ -1653,7 +1710,8 @@ function buildAddToCartConfig(capture, vendorId, pageHost) {
         score: capture.score,
         responsePreview: String(capture.responsePreview || "").slice(0, 500),
         sampleSku: payload.samples.sku || null,
-        sampleQty: payload.samples.qty || null
+        sampleQty: payload.samples.qty || null,
+        skuTransform: skuTransform
       }
     },
     throttling: {
@@ -1978,11 +2036,21 @@ function isAddToVendorTestEnabled() {
   );
 }
 
+function isCartStuffingTestEnabled() {
+  return (
+    typeof QUARTZY_CART_STUFFING_ENABLED !== "undefined" &&
+    QUARTZY_CART_STUFFING_ENABLED === true
+  );
+}
+
+const ATC_BULK_VENDORS = { fisher: true, vwr: true, sigma: true };
+
 const atcTestSection = document.getElementById("atcTestSection");
 const atcVendorIdEl = document.getElementById("atcVendorId");
 const atcVendorIdList = document.getElementById("atcVendorIdList");
 const atcSkuEl = document.getElementById("atcSku");
 const atcQtyEl = document.getElementById("atcQty");
+const atcMethodEl = document.getElementById("atcMethod");
 const atcRunBtn = document.getElementById("atcRunBtn");
 const atcStatus = document.getElementById("atcStatus");
 const atcDebug = document.getElementById("atcDebug");
@@ -2157,6 +2225,7 @@ function onAtcRunClick() {
   const vendorId = atcVendorIdEl ? String(atcVendorIdEl.value || "").trim().toLowerCase() : "";
   const sku = atcSkuEl ? String(atcSkuEl.value || "").trim() : "";
   const qty = atcQtyEl ? String(atcQtyEl.value || "1").trim() || "1" : "1";
+  const method = atcMethodEl ? String(atcMethodEl.value || "api") : "api";
   if (!vendorId) {
     setAtcStatus("Enter a vendor id (e.g. fisher).", "error");
     return;
@@ -2165,29 +2234,65 @@ function onAtcRunClick() {
     setAtcStatus("Enter a catalog / SKU.", "error");
     return;
   }
+  if (method === "bulk") {
+    if (!isCartStuffingTestEnabled()) {
+      setAtcStatus("Cart stuffing is disabled in featureFlags.js.", "error");
+      return;
+    }
+    if (!ATC_BULK_VENDORS[vendorId]) {
+      setAtcStatus("Quick Order upload supports fisher, vwr, and sigma only.", "error");
+      return;
+    }
+  }
+
   atcInFlight = true;
   atcRunBtn.disabled = true;
-  setAtcStatus("Adding via vendor page (page fetch / click fallback)…", "loading");
   renderAtcDebug(null);
 
-  chrome.runtime.sendMessage(
-    { type: "ADD_TO_VENDOR_CART", vendorId: vendorId, sku: sku, qty: qty },
-    function (response) {
-      atcInFlight = false;
-      atcRunBtn.disabled = false;
-      if (chrome.runtime.lastError) {
-        const err = {
-          ok: false,
-          error: "extension",
-          errorMessage: chrome.runtime.lastError.message || "Messaging failed"
-        };
-        setAtcStatus(err.errorMessage, "error");
-        renderAtcDebug(err);
-        return;
-      }
-      const result = response || { ok: false, error: "empty", errorMessage: "No response" };
-      renderAtcDebug(result);
-      if (result.ok) {
+  const message =
+    method === "bulk"
+      ? {
+          type: "PUSH_CART_TO_VENDOR",
+          vendorName: vendorId,
+          items: [{ catalogNumber: sku, quantity: qty, vendor: vendorId }],
+          autoSubmit: true,
+          clickAddToCart: false
+        }
+      : { type: "ADD_TO_VENDOR_CART", vendorId: vendorId, sku: sku, qty: qty };
+
+  setAtcStatus(
+    method === "bulk"
+      ? "Opening Quick Order and attaching CSV/XLS…"
+      : "Adding via vendor page (page fetch / click fallback)…",
+    "loading"
+  );
+
+  chrome.runtime.sendMessage(message, function (response) {
+    atcInFlight = false;
+    atcRunBtn.disabled = false;
+    if (chrome.runtime.lastError) {
+      const err = {
+        ok: false,
+        error: "extension",
+        errorMessage: chrome.runtime.lastError.message || "Messaging failed"
+      };
+      setAtcStatus(err.errorMessage, "error");
+      renderAtcDebug(err);
+      return;
+    }
+    const result = response || { ok: false, error: "empty", errorMessage: "No response" };
+    renderAtcDebug(result);
+    if (result.ok) {
+      if (method === "bulk") {
+        setAtcStatus(
+          "Opened " +
+            (result.vendorId || vendorId) +
+            " Quick Order with " +
+            (result.filename || "upload file") +
+            ".",
+          ""
+        );
+      } else {
         const via =
           result.execution === "dom_click"
             ? "via page Add to cart click"
@@ -2195,11 +2300,11 @@ function onAtcRunClick() {
               ? "via page-context fetch"
               : "HTTP " + (result.status != null ? result.status : "ok");
         setAtcStatus("Added to vendor cart (" + via + ").", "");
-      } else {
-        setAtcStatus(result.errorMessage || result.error || "Add to cart failed", "error");
       }
+    } else {
+      setAtcStatus(result.errorMessage || result.error || "Add to cart failed", "error");
     }
-  );
+  });
 }
 
 function initAtcTestUi() {

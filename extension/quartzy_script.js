@@ -1214,11 +1214,18 @@ function watchQuartzyDomAndRoute(onChange, intervalMs) {
 const ATV_STYLE_ID = "qc-add-to-vendor-style";
 const ATV_IDP_BTN_ID = "order-request-add-to-vendor-site";
 const ATV_GROUP_BTN_ID = "order-request-group-action-add-to-vendor-site";
+const ATV_METHOD_MENU_ID = "qc-atv-method-menu";
 const ATV_TOAST_ID = "qc-atv-toast";
 const REQUESTS_PATH_RE = /^\/groups\/[^/]+\/requests(?:\/|$)/i;
+/** Vendors with Quick Order / Bulk Upload file templates in cartGenerator.js */
+const ATV_BULK_UPLOAD_VENDORS = { fisher: true, vwr: true, sigma: true };
 
 function isAddToVendorSiteEnabled() {
     return typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" && QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true;
+}
+
+function isCartStuffingEnabled() {
+    return typeof QUARTZY_CART_STUFFING_ENABLED !== "undefined" && QUARTZY_CART_STUFFING_ENABLED === true;
 }
 
 function isOrderRequestsPage() {
@@ -1332,6 +1339,65 @@ function ensureAddToVendorStyles() {
 }
 #${ATV_TOAST_ID}.is-ok {
   background: #14532d;
+}
+#${ATV_METHOD_MENU_ID} {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 220px;
+  max-width: 300px;
+  padding: 6px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+#${ATV_METHOD_MENU_ID}[hidden] { display: none !important; }
+#${ATV_METHOD_MENU_ID} .qc-atv-method-title {
+  margin: 0 8px 4px;
+  padding-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+#${ATV_METHOD_MENU_ID} button.qc-atv-method-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: #111827;
+  font: inherit;
+}
+#${ATV_METHOD_MENU_ID} button.qc-atv-method-opt:hover:not(:disabled),
+#${ATV_METHOD_MENU_ID} button.qc-atv-method-opt:focus-visible:not(:disabled) {
+  background: #fff7f3;
+  color: #c2410c;
+  outline: none;
+}
+#${ATV_METHOD_MENU_ID} button.qc-atv-method-opt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#${ATV_METHOD_MENU_ID} .qc-atv-method-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+#${ATV_METHOD_MENU_ID} .qc-atv-method-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #6b7280;
+  line-height: 1.35;
 }
 `;
 }
@@ -1533,34 +1599,23 @@ function scrapeSelectedRequestRows() {
 }
 
 /**
- * @param {{ sku: string, qty: string, vendorName: string, productUrl: string }} line
+ * @param {object} message
  * @returns {Promise<object>}
  */
-function sendAddToVendorCart(line) {
-    const vendorId = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+function sendRuntimeMessage(message) {
     return new Promise(function (resolve) {
         try {
-            chrome.runtime.sendMessage(
-                {
-                    type: "ADD_TO_VENDOR_CART",
-                    vendorId: vendorId,
-                    sku: line.sku,
-                    qty: line.qty || "1",
-                    vendorName: line.vendorName,
-                    productUrl: line.productUrl
-                },
-                function (response) {
-                    if (chrome.runtime.lastError) {
-                        resolve({
-                            ok: false,
-                            error: "extension",
-                            errorMessage: chrome.runtime.lastError.message || "Extension messaging failed."
-                        });
-                        return;
-                    }
-                    resolve(response || { ok: false, error: "empty", errorMessage: "No response from extension." });
+            chrome.runtime.sendMessage(message, function (response) {
+                if (chrome.runtime.lastError) {
+                    resolve({
+                        ok: false,
+                        error: "extension",
+                        errorMessage: chrome.runtime.lastError.message || "Extension messaging failed."
+                    });
+                    return;
                 }
-            );
+                resolve(response || { ok: false, error: "empty", errorMessage: "No response from extension." });
+            });
         } catch (e) {
             resolve({
                 ok: false,
@@ -1572,9 +1627,186 @@ function sendAddToVendorCart(line) {
 }
 
 /**
+ * @param {{ sku: string, qty: string, vendorName: string, productUrl: string }} line
+ * @returns {Promise<object>}
+ */
+function sendAddToVendorCart(line) {
+    const vendorId = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+    return sendRuntimeMessage({
+        type: "ADD_TO_VENDOR_CART",
+        vendorId: vendorId,
+        sku: line.sku,
+        qty: line.qty || "1",
+        vendorName: line.vendorName,
+        productUrl: line.productUrl
+    });
+}
+
+/**
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ * @param {string} vendorId
+ * @returns {Promise<object>}
+ */
+function sendPushCartToVendor(lines, vendorId) {
+    const items = (lines || []).map(function (line) {
+        return {
+            catalogNumber: String(line.sku || "").trim(),
+            quantity: line.qty || "1",
+            vendor: vendorId
+        };
+    });
+    return sendRuntimeMessage({
+        type: "PUSH_CART_TO_VENDOR",
+        vendorName: vendorId,
+        items: items,
+        autoSubmit: true,
+        clickAddToCart: false
+    });
+}
+
+/**
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ * @returns {boolean}
+ */
+function linesSupportBulkUpload(lines) {
+    if (!isCartStuffingEnabled()) return false;
+    const usable = (lines || []).filter(function (l) {
+        return l && String(l.sku || "").trim();
+    });
+    if (!usable.length) return false;
+    return usable.some(function (line) {
+        const id = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+        return !!(id && ATV_BULK_UPLOAD_VENDORS[id]);
+    });
+}
+
+function hideAtvMethodMenu() {
+    const menu = document.getElementById(ATV_METHOD_MENU_ID);
+    if (menu) menu.hidden = true;
+    if (window.__qcAtvMethodOutsideClose) {
+        document.removeEventListener("mousedown", window.__qcAtvMethodOutsideClose, true);
+        window.__qcAtvMethodOutsideClose = null;
+    }
+    if (window.__qcAtvMethodEscClose) {
+        document.removeEventListener("keydown", window.__qcAtvMethodEscClose, true);
+        window.__qcAtvMethodEscClose = null;
+    }
+}
+
+/**
+ * Popover: Mapped cart API vs Quick Order CSV/XLS upload.
+ * @param {HTMLElement} anchorEl
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ * @param {{ onBusy?: function(boolean): void }} [opts]
+ */
+function showAtvMethodMenu(anchorEl, lines, opts) {
+    opts = opts || {};
+    hideAtvMethodMenu();
+    ensureAddToVendorStyles();
+
+    let menu = document.getElementById(ATV_METHOD_MENU_ID);
+    if (!menu) {
+        menu = document.createElement("div");
+        menu.id = ATV_METHOD_MENU_ID;
+        menu.setAttribute("role", "menu");
+        document.body.appendChild(menu);
+    }
+
+    const bulkOk = linesSupportBulkUpload(lines);
+    menu.innerHTML = "";
+    const title = document.createElement("p");
+    title.className = "qc-atv-method-title";
+    title.textContent = "Add to vendor site";
+    menu.appendChild(title);
+
+    function addOption(label, sub, disabled, onPick) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "qc-atv-method-opt";
+        btn.setAttribute("role", "menuitem");
+        btn.disabled = !!disabled;
+        const lab = document.createElement("span");
+        lab.className = "qc-atv-method-label";
+        lab.textContent = label;
+        const subEl = document.createElement("span");
+        subEl.className = "qc-atv-method-sub";
+        subEl.textContent = sub;
+        btn.appendChild(lab);
+        btn.appendChild(subEl);
+        btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (btn.disabled) return;
+            hideAtvMethodMenu();
+            if (typeof opts.onBusy === "function") opts.onBusy(true);
+            Promise.resolve(onPick())
+                .catch(function () {
+                    /* run* helpers toast their own errors */
+                })
+                .finally(function () {
+                    if (typeof opts.onBusy === "function") opts.onBusy(false);
+                });
+        });
+        menu.appendChild(btn);
+    }
+
+    addOption(
+        "Mapped cart API",
+        "Uses your saved vendorCartConfigs add_to_cart mapping",
+        false,
+        function () {
+            return runAddToVendorForLines(lines, "api");
+        }
+    );
+    addOption(
+        "Quick Order upload (CSV / XLS)",
+        bulkOk
+            ? "Opens Fisher / VWR / Sigma Quick Order and drops a generated file"
+            : isCartStuffingEnabled()
+              ? "Only Fisher, VWR, and Sigma support file upload right now"
+              : "Cart stuffing is disabled in featureFlags.js",
+        !bulkOk,
+        function () {
+            return runAddToVendorForLines(lines, "bulk");
+        }
+    );
+
+    menu.hidden = false;
+    const rect = anchorEl.getBoundingClientRect();
+    const menuWidth = Math.max(220, menu.offsetWidth || 220);
+    let left = rect.left;
+    if (left + menuWidth > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - menuWidth - 8);
+    }
+    let top = rect.bottom + 6;
+    menu.style.left = Math.round(left) + "px";
+    menu.style.top = Math.round(top) + "px";
+    requestAnimationFrame(function () {
+        const h = menu.offsetHeight || 0;
+        if (top + h > window.innerHeight - 8) {
+            top = Math.max(8, rect.top - h - 6);
+            menu.style.top = Math.round(top) + "px";
+        }
+    });
+
+    window.__qcAtvMethodOutsideClose = function (ev) {
+        if (!menu.contains(ev.target) && ev.target !== anchorEl && !anchorEl.contains(ev.target)) {
+            hideAtvMethodMenu();
+        }
+    };
+    window.__qcAtvMethodEscClose = function (ev) {
+        if (ev.key === "Escape") hideAtvMethodMenu();
+    };
+    setTimeout(function () {
+        document.addEventListener("mousedown", window.__qcAtvMethodOutsideClose, true);
+        document.addEventListener("keydown", window.__qcAtvMethodEscClose, true);
+    }, 0);
+}
+
+/**
  * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
  */
-async function runAddToVendorForLines(lines) {
+async function runAddToVendorViaApi(lines) {
     const usable = (lines || []).filter(function (l) {
         return l && String(l.sku || "").trim();
     });
@@ -1583,7 +1815,7 @@ async function runAddToVendorForLines(lines) {
         return;
     }
     showAtvToast(
-        usable.length === 1 ? "Adding to vendor cart…" : "Adding " + usable.length + " items to vendor carts…",
+        usable.length === 1 ? "Adding via mapped cart API…" : "Adding " + usable.length + " items via mapped cart API…",
         ""
     );
     let okCount = 0;
@@ -1599,8 +1831,7 @@ async function runAddToVendorForLines(lines) {
         if (result && result.ok) {
             okCount += 1;
         } else {
-            let detail =
-                (result && result.errorMessage) || (result && result.error) || "failed";
+            let detail = (result && result.errorMessage) || (result && result.error) || "failed";
             if (result && result.responsePreview) {
                 const snippet = String(result.responsePreview)
                     .replace(/\s+/g, " ")
@@ -1626,6 +1857,104 @@ async function runAddToVendorForLines(lines) {
     } else {
         showAtvToast(errors[0] || "Could not add to vendor cart.", "error");
     }
+}
+
+/**
+ * Group lines by vendor and open Quick Order with a generated CSV/XLS per vendor.
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ */
+async function runAddToVendorViaBulkUpload(lines) {
+    if (!isCartStuffingEnabled()) {
+        showAtvToast("Cart stuffing is disabled in featureFlags.js.", "error");
+        return;
+    }
+    const usable = (lines || []).filter(function (l) {
+        return l && String(l.sku || "").trim();
+    });
+    if (!usable.length) {
+        showAtvToast("No catalog # found on the selected request(s).", "error");
+        return;
+    }
+
+    /** @type {Record<string, Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>>} */
+    const byVendor = {};
+    const skipped = [];
+    usable.forEach(function (line) {
+        const vendorId = resolveVendorIdFromQuartzy(line.vendorName, line.productUrl);
+        if (!vendorId) {
+            skipped.push((line.sku || "?") + ": unknown vendor");
+            return;
+        }
+        if (!ATV_BULK_UPLOAD_VENDORS[vendorId]) {
+            skipped.push((line.sku || "?") + ": " + vendorId + " has no Quick Order upload yet");
+            return;
+        }
+        if (!byVendor[vendorId]) byVendor[vendorId] = [];
+        byVendor[vendorId].push(line);
+    });
+
+    const vendorIds = Object.keys(byVendor);
+    if (!vendorIds.length) {
+        showAtvToast(skipped[0] || "No Fisher / VWR / Sigma items to upload.", "error");
+        return;
+    }
+
+    showAtvToast(
+        vendorIds.length === 1
+            ? "Opening " + vendorIds[0] + " Quick Order…"
+            : "Opening Quick Order for " + vendorIds.length + " vendors…",
+        ""
+    );
+
+    let okCount = 0;
+    const errors = skipped.slice();
+    for (let i = 0; i < vendorIds.length; i++) {
+        const vendorId = vendorIds[i];
+        const group = byVendor[vendorId];
+        const result = await sendPushCartToVendor(group, vendorId);
+        if (result && result.ok) {
+            okCount += 1;
+        } else {
+            errors.push(
+                vendorId +
+                    ": " +
+                    ((result && result.errorMessage) || (result && result.error) || "upload failed")
+            );
+        }
+        if (i < vendorIds.length - 1) {
+            await new Promise(function (r) {
+                setTimeout(r, 600);
+            });
+        }
+    }
+
+    if (okCount && !errors.length) {
+        showAtvToast(
+            okCount === 1
+                ? "Opened Quick Order and attached the upload file."
+                : "Opened Quick Order uploads for " + okCount + " vendors.",
+            "ok"
+        );
+    } else if (okCount && errors.length) {
+        showAtvToast(okCount + " opened, " + errors.length + " issue(s). " + errors[0], "error");
+    } else {
+        showAtvToast(errors[0] || "Could not open Quick Order upload.", "error");
+    }
+}
+
+/**
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ * @param {'api'|'bulk'|undefined} [method]
+ */
+async function runAddToVendorForLines(lines, method) {
+    if (method === "bulk") {
+        return runAddToVendorViaBulkUpload(lines);
+    }
+    if (method === "api") {
+        return runAddToVendorViaApi(lines);
+    }
+    /* Legacy / direct calls default to mapped API. */
+    return runAddToVendorViaApi(lines);
 }
 
 function injectIdpAddToVendorButton() {
@@ -1656,16 +1985,23 @@ function injectIdpAddToVendorButton() {
     btn.textContent = "Add to vendor site";
     btn.setAttribute(
         "aria-label",
-        "Add this request’s catalog # to the vendor cart (uses your mapped cart API)"
+        "Add this request’s catalog # to the vendor site (mapped API or Quick Order upload)"
     );
+    btn.setAttribute("aria-haspopup", "menu");
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
         if (btn.disabled) return;
-        btn.disabled = true;
+        const existing = document.getElementById(ATV_METHOD_MENU_ID);
+        if (existing && !existing.hidden) {
+            hideAtvMethodMenu();
+            return;
+        }
         const line = scrapeIdpLine(panel);
-        runAddToVendorForLines([line]).finally(function () {
-            btn.disabled = false;
+        showAtvMethodMenu(btn, [line], {
+            onBusy: function (busy) {
+                btn.disabled = !!busy;
+            }
         });
     });
 
@@ -1756,15 +2092,26 @@ function injectGroupAddToVendorButton() {
     btn.id = ATV_GROUP_BTN_ID;
     if (sample.btnClass) btn.className = sample.btnClass;
     btn.textContent = "Add to Vendor Site";
-    btn.setAttribute("aria-label", "Add selected requests to their vendor carts");
+    btn.setAttribute("aria-label", "Add selected requests to vendor sites (mapped API or Quick Order upload)");
+    btn.setAttribute("aria-haspopup", "menu");
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
         if (btn.disabled) return;
-        btn.disabled = true;
+        const existing = document.getElementById(ATV_METHOD_MENU_ID);
+        if (existing && !existing.hidden) {
+            hideAtvMethodMenu();
+            return;
+        }
         const lines = scrapeSelectedRequestRows();
-        runAddToVendorForLines(lines).finally(function () {
-            btn.disabled = false;
+        if (!lines.length) {
+            showAtvToast("Select one or more requests first.", "error");
+            return;
+        }
+        showAtvMethodMenu(btn, lines, {
+            onBusy: function (busy) {
+                btn.disabled = !!busy;
+            }
         });
     });
     li.appendChild(btn);
