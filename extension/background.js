@@ -30,9 +30,15 @@ const AI_EXTRACT_PROXY_URL = "";
 const FETCH_PRICE_TEST_ENABLED =
   typeof QUARTZY_FETCH_PRICE_TEST_ENABLED !== "undefined" && QUARTZY_FETCH_PRICE_TEST_ENABLED === true;
 
-/** Quick Order / Bulk Upload cart stuffing (CSV/XLSX file drop). */
+/** Quick Order cart stuffing (Fisher line form; VWR/Sigma CSV/XLSX file drop). */
 const CART_STUFFING_ENABLED =
   typeof QUARTZY_CART_STUFFING_ENABLED !== "undefined" && QUARTZY_CART_STUFFING_ENABLED === true;
+
+/** Errors from vendorCartInjector that warrant a short retry while the SPA paints. */
+const CART_STUFF_RETRYABLE_ERRORS = {
+  file_input_not_found: true,
+  form_row_not_found: true
+};
 
 const FETCH_PRICE_TIMEOUT_MS = 40000;
 const CART_STUFF_TAB_TIMEOUT_MS = 45000;
@@ -1768,7 +1774,37 @@ async function injectVendorCartInjector(tabId) {
 }
 
 /**
- * Open the vendor Quick Order page, wait for load, inject CSV/XLSX into the file input.
+ * Normalize PUSH_CART_TO_VENDOR items for the form-fill injector.
+ * @param {Array<object>} items
+ * @param {string} vendorId
+ * @returns {Array<{ catalogNumber: string, quantity: string, catalog: string, qty: string }>}
+ */
+function normalizeCartStuffFormItems(items, vendorId) {
+  const list =
+    typeof filterItemsForVendor === "function" ? filterItemsForVendor(items, vendorId) : items || [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i] || {};
+    const catalog = String(it.catalogNumber || it.catalog || it.sku || "").trim();
+    if (!catalog) continue;
+    const q = it.quantity != null ? it.quantity : it.qty;
+    const n = Number(q);
+    const quantity =
+      Number.isFinite(n) && n > 0 ? String(Math.floor(n)) : String(q == null ? "1" : q).trim() || "1";
+    out.push({
+      catalogNumber: catalog,
+      quantity: quantity,
+      catalog: catalog,
+      qty: quantity
+    });
+  }
+  return out;
+}
+
+/**
+ * Open the vendor Quick Order page and stuff the cart.
+ * Fisher defaults to line-by-line form fill; VWR/Sigma use CSV/XLSX file drop.
+ * Pass opts.strategy = "file" | "form" to override.
  *
  * Call via runtime message:
  *   { type: "PUSH_CART_TO_VENDOR", items: [...], vendorName: "fisher" }
@@ -1787,13 +1823,6 @@ async function pushCartToVendor(items, vendorName, opts) {
       errorMessage: "Cart stuffing is disabled."
     };
   }
-  if (typeof generateCartFile !== "function") {
-    return {
-      ok: false,
-      error: "generator_missing",
-      errorMessage: "cartGenerator.js failed to load in the service worker."
-    };
-  }
 
   const vendorId =
     typeof normalizeVendorId === "function"
@@ -1805,25 +1834,64 @@ async function pushCartToVendor(items, vendorName, opts) {
     return { ok: false, error: "missing_vendor", errorMessage: "vendorName is required." };
   }
 
-  let file;
-  try {
-    file = generateCartFile(items, vendorId);
-  } catch (e) {
-    return {
-      ok: false,
-      error: "generate_failed",
-      errorMessage: (e && e.message) || "Could not generate vendor cart file.",
-      vendorId: vendorId
-    };
+  const strategyRaw = String(opts.strategy || (vendorId === "fisher" ? "form" : "file")).toLowerCase();
+  const strategy =
+    strategyRaw === "form" || strategyRaw === "line" || strategyRaw === "line_fill" ? "form" : "file";
+
+  /** @type {object|null} */
+  let file = null;
+  /** @type {Array<object>} */
+  let formItems = [];
+  let openUrl = String(opts.quickOrderUrl || "").trim();
+  let itemCount = 0;
+
+  if (strategy === "form") {
+    const cfg =
+      typeof getVendorQuickOrderConfig === "function" ? getVendorQuickOrderConfig(vendorId) : null;
+    if (!openUrl) {
+      openUrl = cfg && cfg.quickOrderUrl ? String(cfg.quickOrderUrl) : "";
+    }
+    formItems = normalizeCartStuffFormItems(items, vendorId);
+    itemCount = formItems.length;
+    if (!itemCount) {
+      return {
+        ok: false,
+        error: "missing_items",
+        errorMessage: 'No cart items with catalog numbers for vendor "' + vendorId + '".',
+        vendorId: vendorId,
+        strategy: strategy
+      };
+    }
+  } else {
+    if (typeof generateCartFile !== "function") {
+      return {
+        ok: false,
+        error: "generator_missing",
+        errorMessage: "cartGenerator.js failed to load in the service worker."
+      };
+    }
+    try {
+      file = generateCartFile(items, vendorId);
+    } catch (e) {
+      return {
+        ok: false,
+        error: "generate_failed",
+        errorMessage: (e && e.message) || "Could not generate vendor cart file.",
+        vendorId: vendorId,
+        strategy: strategy
+      };
+    }
+    if (!openUrl) openUrl = String(file.quickOrderUrl || "").trim();
+    itemCount = file.itemCount;
   }
 
-  const openUrl = String(opts.quickOrderUrl || file.quickOrderUrl || "").trim();
   if (!openUrl) {
     return {
       ok: false,
       error: "missing_url",
       errorMessage: "No Quick Order URL for vendor " + vendorId,
-      vendorId: vendorId
+      vendorId: vendorId,
+      strategy: strategy
     };
   }
 
@@ -1835,7 +1903,8 @@ async function pushCartToVendor(items, vendorName, opts) {
       ok: false,
       error: "tab_create_failed",
       errorMessage: (eCreate && eCreate.message) || "Could not open vendor Quick Order tab.",
-      vendorId: vendorId
+      vendorId: vendorId,
+      strategy: strategy
     };
   }
   if (!tab || tab.id == null) {
@@ -1843,34 +1912,55 @@ async function pushCartToVendor(items, vendorName, opts) {
       ok: false,
       error: "tab_create_failed",
       errorMessage: "No tab id from chrome.tabs.create.",
-      vendorId: vendorId
+      vendorId: vendorId,
+      strategy: strategy
     };
   }
 
   const tabId = tab.id;
   try {
     await waitForTabComplete(tabId, opts.timeoutMs || CART_STUFF_TAB_TIMEOUT_MS);
-    /* SPA shells often paint after status=complete — brief settle. */
+    /* SPA shells often paint after status=complete — Fisher Rapid Order needs a bit longer. */
+    const defaultSettle = strategy === "form" ? 2000 : 1200;
     await new Promise(function (r) {
-      setTimeout(r, opts.settleMs != null ? opts.settleMs : 1200);
+      setTimeout(r, opts.settleMs != null ? opts.settleMs : defaultSettle);
     });
 
     await injectVendorCartInjector(tabId);
 
-    const payload = {
-      vendorId: file.vendorId,
-      filename: file.filename,
-      mimeType: file.mimeType,
-      encoding: file.encoding,
-      body: file.body,
-      itemCount: file.itemCount,
-      autoSubmit: opts.autoSubmit !== false,
-      clickAddToCart: !!opts.clickAddToCart,
-      selectors: opts.selectors || null,
-      waitMs: opts.waitMs,
-      submitDelayMs: opts.submitDelayMs,
-      addToCartDelayMs: opts.addToCartDelayMs
-    };
+    const clickAddToCart =
+      opts.clickAddToCart != null ? !!opts.clickAddToCart : strategy === "form";
+
+    /** @type {object} */
+    const payload =
+      strategy === "form"
+        ? {
+            vendorId: vendorId,
+            strategy: "form",
+            items: formItems,
+            itemCount: itemCount,
+            clickAddToCart: clickAddToCart,
+            selectors: opts.selectors || null,
+            waitMs: opts.waitMs,
+            rowWaitMs: opts.rowWaitMs,
+            rowFillDelayMs: opts.rowFillDelayMs,
+            addToCartDelayMs: opts.addToCartDelayMs
+          }
+        : {
+            vendorId: file.vendorId,
+            strategy: "file",
+            filename: file.filename,
+            mimeType: file.mimeType,
+            encoding: file.encoding,
+            body: file.body,
+            itemCount: file.itemCount,
+            autoSubmit: opts.autoSubmit !== false,
+            clickAddToCart: !!opts.clickAddToCart,
+            selectors: opts.selectors || null,
+            waitMs: opts.waitMs,
+            submitDelayMs: opts.submitDelayMs,
+            addToCartDelayMs: opts.addToCartDelayMs
+          };
 
     let injectResult = null;
     const maxAttempts = opts.injectAttempts != null ? opts.injectAttempts : 4;
@@ -1881,7 +1971,11 @@ async function pushCartToVendor(items, vendorName, opts) {
           payload: payload
         });
         if (injectResult && injectResult.ok) break;
-        if (injectResult && injectResult.error === "file_input_not_found" && attempt < maxAttempts - 1) {
+        if (
+          injectResult &&
+          CART_STUFF_RETRYABLE_ERRORS[injectResult.error] &&
+          attempt < maxAttempts - 1
+        ) {
           await new Promise(function (r) {
             setTimeout(r, 800);
           });
@@ -1902,11 +1996,12 @@ async function pushCartToVendor(items, vendorName, opts) {
             errorMessage:
               (eMsg && eMsg.message) ||
               "Could not reach vendorCartInjector on the Quick Order tab.",
-            vendorId: file.vendorId,
+            vendorId: vendorId,
+            strategy: strategy,
             tabId: tabId,
             quickOrderUrl: openUrl,
-            filename: file.filename,
-            itemCount: file.itemCount
+            filename: file ? file.filename : null,
+            itemCount: itemCount
           };
         }
       }
@@ -1914,18 +2009,19 @@ async function pushCartToVendor(items, vendorName, opts) {
 
     return {
       ok: !!(injectResult && injectResult.ok),
-      vendorId: file.vendorId,
+      vendorId: vendorId,
+      strategy: strategy,
       tabId: tabId,
       quickOrderUrl: openUrl,
-      filename: file.filename,
-      mimeType: file.mimeType,
-      itemCount: file.itemCount,
-      csvPreview: file.csvPreview,
+      filename: file ? file.filename : null,
+      mimeType: file ? file.mimeType : null,
+      itemCount: itemCount,
+      csvPreview: file ? file.csvPreview : null,
       inject: injectResult || null,
       error: injectResult && !injectResult.ok ? injectResult.error : null,
       errorMessage:
         injectResult && !injectResult.ok
-          ? injectResult.errorMessage || "File injection did not succeed."
+          ? injectResult.errorMessage || "Cart stuffing did not succeed."
           : null
     };
   } catch (eRun) {
@@ -1933,7 +2029,8 @@ async function pushCartToVendor(items, vendorName, opts) {
       ok: false,
       error: "unexpected",
       errorMessage: (eRun && eRun.message) || "Cart stuffing failed.",
-      vendorId: file.vendorId,
+      vendorId: vendorId,
+      strategy: strategy,
       tabId: tabId,
       quickOrderUrl: openUrl
     };

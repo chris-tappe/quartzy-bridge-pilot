@@ -1217,7 +1217,7 @@ const ATV_GROUP_BTN_ID = "order-request-group-action-add-to-vendor-site";
 const ATV_METHOD_MENU_ID = "qc-atv-method-menu";
 const ATV_TOAST_ID = "qc-atv-toast";
 const REQUESTS_PATH_RE = /^\/groups\/[^/]+\/requests(?:\/|$)/i;
-/** Vendors with Quick Order / Bulk Upload file templates in cartGenerator.js */
+/** Vendors supported by Quick Order cart stuffing (Fisher form; VWR/Sigma file). */
 const ATV_BULK_UPLOAD_VENDORS = { fisher: true, vwr: true, sigma: true };
 
 function isAddToVendorSiteEnabled() {
@@ -1542,6 +1542,31 @@ function scrapeIdpLine(root) {
 }
 
 /**
+ * Catalog cell also contains marketplace links (e.g. UniversityBuy) — take only the cat # line.
+ * @param {Element|null} catalogRoot
+ * @returns {string}
+ */
+function readCatalogSkuFromCell(catalogRoot) {
+    if (!catalogRoot) return "";
+    const input = catalogRoot.querySelector && catalogRoot.querySelector("input");
+    if (input) return readInputValue(input);
+
+    const line =
+        (catalogRoot.classList && catalogRoot.classList.contains("catalog-number-line")
+            ? catalogRoot
+            : null) ||
+        (catalogRoot.querySelector && catalogRoot.querySelector(".catalog-number-line"));
+    const raw = String((line || catalogRoot).textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!raw) return "";
+
+    /* First token is the catalog #; ignore trailing link labels like "UniversityBuy". */
+    const first = raw.split(" ")[0] || "";
+    return first.trim();
+}
+
+/**
  * @param {Element} row
  * @returns {{ sku: string, qty: string, vendorName: string, productUrl: string }}
  */
@@ -1549,9 +1574,11 @@ function scrapeTableRow(row) {
     const empty = { sku: "", qty: "1", vendorName: "", productUrl: "" };
     if (!row) return empty;
     const vendorEl = row.querySelector(".column.vendor .company-name") || row.querySelector(".company-name");
+    /* Prefer the dedicated cat# line — .catalog-number also includes UniversityBuy link text. */
     const catalogEl =
-        row.querySelector(".catalog-number") ||
         row.querySelector(".catalog-number-line") ||
+        row.querySelector(".column.vendor .catalog-number") ||
+        row.querySelector(".catalog-number") ||
         row.querySelector(".column.catalog-number");
     const qtyEl =
         row.querySelector(".column.quantity") ||
@@ -1561,11 +1588,7 @@ function scrapeTableRow(row) {
         row.querySelector('[data-analytics-id="order-request.item.product-url"]') ||
         row.querySelector('a[href^="http"]');
 
-    let sku = "";
-    if (catalogEl) {
-        const input = catalogEl.querySelector && catalogEl.querySelector("input");
-        sku = input ? readInputValue(input) : String(catalogEl.textContent || "").trim();
-    }
+    const sku = readCatalogSkuFromCell(catalogEl);
     let qty = "1";
     if (qtyEl) {
         const input = qtyEl.querySelector && qtyEl.querySelector("input");
@@ -1659,8 +1682,9 @@ function sendPushCartToVendor(lines, vendorId) {
         type: "PUSH_CART_TO_VENDOR",
         vendorName: vendorId,
         items: items,
+        /* Fisher form defaults to clicking Add all to Cart; file vendors auto-submit upload only. */
         autoSubmit: true,
-        clickAddToCart: false
+        clickAddToCart: vendorId === "fisher" ? true : false
     });
 }
 
@@ -1694,7 +1718,7 @@ function hideAtvMethodMenu() {
 }
 
 /**
- * Popover: Mapped cart API vs Quick Order CSV/XLS upload.
+ * Popover: Mapped cart API vs Quick Order cart stuffing.
  * @param {HTMLElement} anchorEl
  * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
  * @param {{ onBusy?: function(boolean): void }} [opts]
@@ -1759,11 +1783,11 @@ function showAtvMethodMenu(anchorEl, lines, opts) {
         }
     );
     addOption(
-        "Quick Order upload (CSV / XLS)",
+        "Quick Order / line entry",
         bulkOk
-            ? "Opens Fisher / VWR / Sigma Quick Order and drops a generated file"
+            ? "Fisher: fills catalog lines; VWR / Sigma: drops a generated CSV/XLS"
             : isCartStuffingEnabled()
-              ? "Only Fisher, VWR, and Sigma support file upload right now"
+              ? "Only Fisher, VWR, and Sigma support Quick Order stuffing right now"
               : "Cart stuffing is disabled in featureFlags.js",
         !bulkOk,
         function () {
@@ -1860,7 +1884,7 @@ async function runAddToVendorViaApi(lines) {
 }
 
 /**
- * Group lines by vendor and open Quick Order with a generated CSV/XLS per vendor.
+ * Group lines by vendor and open Quick Order (Fisher form fill or VWR/Sigma file drop).
  * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
  */
 async function runAddToVendorViaBulkUpload(lines) {
@@ -1886,7 +1910,7 @@ async function runAddToVendorViaBulkUpload(lines) {
             return;
         }
         if (!ATV_BULK_UPLOAD_VENDORS[vendorId]) {
-            skipped.push((line.sku || "?") + ": " + vendorId + " has no Quick Order upload yet");
+            skipped.push((line.sku || "?") + ": " + vendorId + " has no Quick Order stuffing yet");
             return;
         }
         if (!byVendor[vendorId]) byVendor[vendorId] = [];
@@ -1895,7 +1919,7 @@ async function runAddToVendorViaBulkUpload(lines) {
 
     const vendorIds = Object.keys(byVendor);
     if (!vendorIds.length) {
-        showAtvToast(skipped[0] || "No Fisher / VWR / Sigma items to upload.", "error");
+        showAtvToast(skipped[0] || "No Fisher / VWR / Sigma items to stuff.", "error");
         return;
     }
 
@@ -1918,7 +1942,7 @@ async function runAddToVendorViaBulkUpload(lines) {
             errors.push(
                 vendorId +
                     ": " +
-                    ((result && result.errorMessage) || (result && result.error) || "upload failed")
+                    ((result && result.errorMessage) || (result && result.error) || "stuffing failed")
             );
         }
         if (i < vendorIds.length - 1) {
@@ -1929,16 +1953,19 @@ async function runAddToVendorViaBulkUpload(lines) {
     }
 
     if (okCount && !errors.length) {
+        const onlyFisher = vendorIds.length === 1 && vendorIds[0] === "fisher";
         showAtvToast(
             okCount === 1
-                ? "Opened Quick Order and attached the upload file."
-                : "Opened Quick Order uploads for " + okCount + " vendors.",
+                ? onlyFisher
+                    ? "Filled Fisher Quick Order lines and clicked Add all to Cart."
+                    : "Opened Quick Order and attached the upload file."
+                : "Opened Quick Order for " + okCount + " vendors.",
             "ok"
         );
     } else if (okCount && errors.length) {
         showAtvToast(okCount + " opened, " + errors.length + " issue(s). " + errors[0], "error");
     } else {
-        showAtvToast(errors[0] || "Could not open Quick Order upload.", "error");
+        showAtvToast(errors[0] || "Could not open Quick Order.", "error");
     }
 }
 

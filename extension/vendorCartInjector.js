@@ -1,13 +1,17 @@
 /**
  * Injected on vendor Quick Order / Bulk Upload pages.
- * Receives a generated file payload and programmatically sets it on the
- * native <input type="file"> (DataTransfer), then optionally clicks Upload / Add.
+ *
+ * Strategies:
+ * - file (default for VWR / Sigma): assign a generated CSV/XLSX to <input type="file">
+ * - form (default for Fisher): fill Rapid Order line rows
+ *     #qa_catNumber_{0..} / #qa_item_qty_input_{0..} (Gemini's #catalogNumberN is wrong)
  *
  * Message: { type: "QUARTZY_CART_STUFF", payload: CartStuffPayload }
  */
 (function () {
   "use strict";
 
+  /* Allow re-inject after extension reload so selector fixes take effect on new tabs. */
   if (window.__quartzyVendorCartInjectorBound) return;
   window.__quartzyVendorCartInjectorBound = true;
 
@@ -42,12 +46,37 @@
         'input[type="button"][value*="Upload" i]'
       ],
       addToCartButton: [
-        'button:has-text("Add all to Cart")',
+        "#rapid_order_add_cart",
+        "a#rapid_order_add_cart",
+        "#addAllToCart",
+        "button.add-to-cart-btn",
         'a:has-text("Add all to Cart")',
+        'button:has-text("Add all to Cart")',
         'button[class*="add" i][class*="cart" i]',
-        'input[type="button"][value*="Add" i][value*="Cart" i]',
-        'button[id*="addToCart" i]'
-      ]
+        'button[id*="addToCart" i]',
+        'button[id*="addAllToCart" i]'
+      ],
+      addRowsButton: [
+        "a#ro_addrows",
+        "#ro_addrows",
+        "a.js-ut-add-more-rows",
+        'a:has-text("Add 3 More Rows")',
+        'button:has-text("Add 3 More Rows")',
+        'a[id*="addRows" i]',
+        'a[onclick*="addRows"]'
+      ],
+      lineEntryTab: [
+        'a:has-text("Line by Line")',
+        'button:has-text("Line by Line")',
+        '[role="tab"]:has-text("Line by Line")',
+        'a:has-text("Enter Catalog")',
+        'button:has-text("Enter Catalog")'
+      ],
+      /* 0-based: qa_catNumber_0, qa_item_qty_input_0 */
+      catalogIdPrefix: "qa_catNumber_",
+      quantityIdPrefix: "qa_item_qty_input_",
+      catalogName: "shoppingCartCatNum",
+      quantityName: "shoppingCartQty"
     },
     vwr: {
       fileInput: [
@@ -272,10 +301,321 @@
   }
 
   /**
+   * Set an input value the way Fisher (jQuery change handlers) / React expect.
+   * @param {HTMLInputElement|HTMLTextAreaElement} input
+   * @param {string} value
+   * @param {{ triggerChange?: boolean }} [opts]
+   */
+  function setNativeInputValue(input, value, opts) {
+    const str = String(value == null ? "" : value);
+    const triggerChange = !opts || opts.triggerChange !== false;
+
+    /* Prefer jQuery — Fisher Rapid Order binds on $(".js-json-typeahead").on("change", …). */
+    if (typeof window.jQuery === "function") {
+      try {
+        const $el = window.jQuery(input);
+        $el.val(str);
+        if (triggerChange) {
+          $el.trigger("input");
+          $el.trigger("change");
+        }
+        return;
+      } catch (eJq) {
+        /* fall through to native */
+      }
+    }
+
+    try {
+      const proto =
+        input instanceof HTMLTextAreaElement
+          ? window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement && window.HTMLInputElement.prototype;
+      const desc = proto && Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && typeof desc.set === "function") {
+        desc.set.call(input, str);
+      } else {
+        input.value = str;
+      }
+    } catch (e) {
+      input.value = str;
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    if (triggerChange) {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      try {
+        input.dispatchEvent(new Event("blur", { bubbles: true }));
+      } catch (e2) {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * @param {HTMLElement|null} el
+   * @returns {HTMLInputElement|null}
+   */
+  function asTextInput(el) {
+    if (!el || el.tagName !== "INPUT") return null;
+    return /** @type {HTMLInputElement} */ (el);
+  }
+
+  /**
+   * Fisher Rapid Order uses 0-based ids: qa_catNumber_0 / qa_item_qty_input_0.
+   * Keep Gemini-style #catalogNumberN as a fallback.
+   * @param {object} selectors
+   * @param {number} rowNum 1-based
+   * @returns {{ cat: HTMLInputElement|null, qty: HTMLInputElement|null }}
+   */
+  function getRowInputs(selectors, rowNum) {
+    const idx = rowNum - 1;
+    const catPrefix = String((selectors && selectors.catalogIdPrefix) || "qa_catNumber_");
+    const qtyPrefix = String((selectors && selectors.quantityIdPrefix) || "qa_item_qty_input_");
+
+    let cat =
+      asTextInput(document.getElementById(catPrefix + idx)) ||
+      asTextInput(document.getElementById("catalogNumber" + rowNum));
+    let qty =
+      asTextInput(document.getElementById(qtyPrefix + idx)) ||
+      asTextInput(document.getElementById("quantity" + rowNum));
+
+    /* Name-based fallback: all catalog inputs share name=shoppingCartCatNum */
+    if (!cat || !qty) {
+      const catName = (selectors && selectors.catalogName) || "shoppingCartCatNum";
+      const qtyName = (selectors && selectors.quantityName) || "shoppingCartQty";
+      const cats = document.querySelectorAll('input[name="' + catName + '"]');
+      const qtys = document.querySelectorAll('input[name="' + qtyName + '"]');
+      if (!cat && cats[idx]) cat = asTextInput(cats[idx]);
+      if (!qty && qtys[idx]) qty = asTextInput(qtys[idx]);
+    }
+
+    return { cat: cat, qty: qty };
+  }
+
+  /**
+   * @param {object} selectors
+   * @param {number} rowNum
+   * @param {number} timeoutMs
+   * @returns {Promise<{ cat: HTMLInputElement|null, qty: HTMLInputElement|null }>}
+   */
+  async function ensureRow(selectors, rowNum, timeoutMs) {
+    let row = getRowInputs(selectors, rowNum);
+    if (row.cat && row.qty) return row;
+
+    const deadline = Date.now() + (timeoutMs != null ? timeoutMs : 6000);
+    let expandAttempts = 0;
+    while (Date.now() < deadline) {
+      row = getRowInputs(selectors, rowNum);
+      if (row.cat && row.qty) return row;
+
+      const addRowsBtn = queryFirst(selectors.addRowsButton);
+      if (addRowsBtn && expandAttempts < 40) {
+        clickEl(addRowsBtn);
+        expandAttempts += 1;
+        await sleep(400);
+        continue;
+      }
+      await sleep(200);
+    }
+    return getRowInputs(selectors, rowNum);
+  }
+
+  /**
+   * Snapshot of candidate form fields for debug when selectors miss.
+   * @returns {object}
+   */
+  function diagnoseFormFields() {
+    const cats = Array.prototype.slice
+      .call(document.querySelectorAll('input[name="shoppingCartCatNum"], input[id^="qa_catNumber_"], input.roTextField--typeahead'))
+      .slice(0, 8)
+      .map(function (el) {
+        return { id: el.id || "", name: el.getAttribute("name") || "", className: String(el.className || "").slice(0, 80) };
+      });
+    const qtys = Array.prototype.slice
+      .call(document.querySelectorAll('input[name="shoppingCartQty"], input[id^="qa_item_qty_input_"], input.roTextField--qty'))
+      .slice(0, 8)
+      .map(function (el) {
+        return { id: el.id || "", name: el.getAttribute("name") || "" };
+      });
+    return {
+      url: location.href,
+      hasQaCat0: !!document.getElementById("qa_catNumber_0"),
+      hasCatalogNumber1: !!document.getElementById("catalogNumber1"),
+      hasRoAddRows: !!document.getElementById("ro_addrows"),
+      hasAddCart: !!document.getElementById("rapid_order_add_cart"),
+      cats: cats,
+      qtys: qtys
+    };
+  }
+
+  /**
+   * Normalize payload.items into { catalog, qty } rows.
+   * @param {object} payload
+   * @returns {Array<{ catalog: string, qty: string }>}
+   */
+  function normalizeFormItems(payload) {
+    const raw = (payload && payload.items) || [];
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      const it = raw[i] || {};
+      const catalog = String(it.catalog || it.catalogNumber || it.sku || "").trim();
+      if (!catalog) continue;
+      const q = it.qty != null ? it.qty : it.quantity;
+      const n = Number(q);
+      const qty =
+        Number.isFinite(n) && n > 0 ? String(Math.floor(n)) : String(q == null ? "1" : q).trim() || "1";
+      out.push({ catalog: catalog, qty: qty });
+    }
+    return out;
+  }
+
+  /**
+   * Wait until Add all to Cart is enabled (Fisher disables it until rows resolve).
+   * @param {Element|null} atc
+   * @param {number} timeoutMs
+   * @returns {Promise<boolean>}
+   */
+  async function waitForAddToCartEnabled(atc, timeoutMs) {
+    if (!atc) return false;
+    const deadline = Date.now() + (timeoutMs != null ? timeoutMs : 8000);
+    while (Date.now() < deadline) {
+      const disabled =
+        atc.classList.contains("disabled") ||
+        atc.getAttribute("aria-disabled") === "true" ||
+        /** @type {any} */ (atc).disabled === true;
+      if (!disabled) return true;
+      await sleep(250);
+    }
+    return !(
+      atc.classList.contains("disabled") ||
+      atc.getAttribute("aria-disabled") === "true" ||
+      /** @type {any} */ (atc).disabled === true
+    );
+  }
+
+  /**
+   * Fisher Rapid Order line-by-line form fill.
    * @param {object} payload
    * @returns {Promise<object>}
    */
-  async function stuffCart(payload) {
+  async function stuffCartViaForm(payload) {
+    const vendorId = String((payload && payload.vendorId) || "").toLowerCase();
+    const defaults = DEFAULT_VENDOR_SELECTORS[vendorId] || DEFAULT_VENDOR_SELECTORS.fisher;
+    const selectors = Object.assign({}, defaults, (payload && payload.selectors) || {});
+    const clickAddToCart = payload && payload.clickAddToCart !== false;
+    const items = normalizeFormItems(payload);
+
+    if (!items.length) {
+      return {
+        ok: false,
+        error: "missing_items",
+        errorMessage: "No catalog items in form-fill cart-stuff payload.",
+        vendorId: vendorId,
+        url: location.href
+      };
+    }
+
+    /* If the page is on Copy/Paste or bulk UI, try switching to Line by Line first. */
+    let first = getRowInputs(selectors, 1);
+    if (!first.cat) {
+      const tab = queryFirst(selectors.lineEntryTab);
+      if (tab) {
+        clickEl(tab);
+        await sleep(400);
+      }
+      first = getRowInputs(selectors, 1);
+      if (!first.cat) {
+        await waitFor(
+          [
+            "#qa_catNumber_0",
+            'input[name="shoppingCartCatNum"]',
+            "input.roTextField--typeahead",
+            "#catalogNumber1",
+            'input[id^="catalogNumber"]'
+          ],
+          payload.waitMs || 12000
+        );
+        first = getRowInputs(selectors, 1);
+      }
+    }
+
+    if (!first.cat) {
+      return {
+        ok: false,
+        error: "form_row_not_found",
+        errorMessage:
+          "Could not find Fisher Quick Order catalog fields (#qa_catNumber_0). Pass payload.selectors to override.",
+        vendorId: vendorId,
+        url: location.href,
+        diagnose: diagnoseFormFields()
+      };
+    }
+
+    const filled = [];
+    const failed = [];
+    const rowSettleMs = payload.rowFillDelayMs != null ? payload.rowFillDelayMs : 450;
+    for (let i = 0; i < items.length; i++) {
+      const rowNum = i + 1;
+      const row = await ensureRow(selectors, rowNum, payload.rowWaitMs || 8000);
+      if (!row.cat || !row.qty) {
+        failed.push({ index: i, catalog: items[i].catalog, reason: "row_missing" });
+        continue;
+      }
+      /* Catalog change kicks off Fisher's typeahead / product lookup AJAX. */
+      setNativeInputValue(row.cat, items[i].catalog);
+      await sleep(Math.min(rowSettleMs, 300));
+      setNativeInputValue(row.qty, items[i].qty);
+      filled.push({
+        index: i,
+        row: rowNum,
+        catalog: items[i].catalog,
+        qty: items[i].qty,
+        catId: row.cat.id || "",
+        qtyId: row.qty.id || ""
+      });
+      await sleep(rowSettleMs);
+    }
+
+    const result = {
+      ok: filled.length > 0,
+      strategy: "form",
+      vendorId: vendorId,
+      itemCount: items.length,
+      filledCount: filled.length,
+      failedCount: failed.length,
+      filled: filled,
+      failed: failed.length ? failed : undefined,
+      addedToCart: false,
+      url: location.href
+    };
+
+    if (!filled.length) {
+      result.error = "form_fill_failed";
+      result.errorMessage = "Could not populate any Quick Order rows.";
+      result.diagnose = diagnoseFormFields();
+      return result;
+    }
+
+    if (clickAddToCart) {
+      await sleep(payload.addToCartDelayMs != null ? payload.addToCartDelayMs : 800);
+      const atc = queryFirst(selectors.addToCartButton);
+      result.addToCartSelector = atc ? describeEl(atc) : null;
+      const enabled = await waitForAddToCartEnabled(atc, payload.atcEnableWaitMs || 10000);
+      if (enabled) {
+        result.addedToCart = clickEl(atc);
+      } else {
+        result.warning =
+          "Rows filled, but Add all to Cart stayed disabled (product lookup may still be running, or sign-in / match selection required).";
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * @param {object} payload
+   * @returns {Promise<object>}
+   */
+  async function stuffCartViaFile(payload) {
     const vendorId = String((payload && payload.vendorId) || "").toLowerCase();
     const defaults = DEFAULT_VENDOR_SELECTORS[vendorId] || DEFAULT_VENDOR_SELECTORS.vwr;
     const selectors = Object.assign({}, defaults, (payload && payload.selectors) || {});
@@ -314,6 +654,7 @@
 
     const result = {
       ok: true,
+      strategy: "file",
       vendorId: vendorId,
       filename: file.name,
       mimeType: file.type,
@@ -339,6 +680,18 @@
     }
 
     return result;
+  }
+
+  /**
+   * @param {object} payload
+   * @returns {Promise<object>}
+   */
+  async function stuffCart(payload) {
+    const strategy = String((payload && payload.strategy) || "file").toLowerCase();
+    if (strategy === "form" || strategy === "line" || strategy === "line_fill") {
+      return stuffCartViaForm(payload || {});
+    }
+    return stuffCartViaFile(payload || {});
   }
 
   /**

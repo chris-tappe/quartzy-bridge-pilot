@@ -2240,7 +2240,7 @@ function onAtcRunClick() {
       return;
     }
     if (!ATC_BULK_VENDORS[vendorId]) {
-      setAtcStatus("Quick Order upload supports fisher, vwr, and sigma only.", "error");
+      setAtcStatus("Quick Order stuffing supports fisher, vwr, and sigma only.", "error");
       return;
     }
   }
@@ -2256,13 +2256,15 @@ function onAtcRunClick() {
           vendorName: vendorId,
           items: [{ catalogNumber: sku, quantity: qty, vendor: vendorId }],
           autoSubmit: true,
-          clickAddToCart: false
+          clickAddToCart: vendorId === "fisher"
         }
       : { type: "ADD_TO_VENDOR_CART", vendorId: vendorId, sku: sku, qty: qty };
 
   setAtcStatus(
     method === "bulk"
-      ? "Opening Quick Order and attaching CSV/XLS…"
+      ? vendorId === "fisher"
+        ? "Opening Fisher Quick Order and filling catalog lines…"
+        : "Opening Quick Order and attaching CSV/XLS…"
       : "Adding via vendor page (page fetch / click fallback)…",
     "loading"
   );
@@ -2284,14 +2286,15 @@ function onAtcRunClick() {
     renderAtcDebug(result);
     if (result.ok) {
       if (method === "bulk") {
-        setAtcStatus(
-          "Opened " +
-            (result.vendorId || vendorId) +
-            " Quick Order with " +
-            (result.filename || "upload file") +
-            ".",
-          ""
-        );
+        const filled =
+          result.strategy === "form"
+            ? "Filled " +
+              (result.inject && result.inject.filledCount != null
+                ? result.inject.filledCount
+                : result.itemCount || "?") +
+              " Quick Order line(s)."
+            : "Opened Quick Order with " + (result.filename || "upload file") + ".";
+        setAtcStatus((result.vendorId || vendorId) + ": " + filled, "");
       } else {
         const via =
           result.execution === "dom_click"

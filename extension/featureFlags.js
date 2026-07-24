@@ -10,8 +10,8 @@
  * ADD_TO_VENDOR_SITE_ENABLED — inject “Add to vendor site” on Quartzy Order Requests
  *   (IDP + Group Actions) using saved vendorCartConfigs.
  *
- * CART_STUFFING_ENABLED — open vendor Quick Order / Bulk Upload, inject a generated
- *   CSV/XLSX into the native file input (Fisher / VWR / Sigma).
+ * CART_STUFFING_ENABLED — open vendor Quick Order and stuff the cart:
+ *   Fisher fills the line-by-line form; VWR / Sigma drop a generated CSV/XLSX.
  */
 var QUARTZY_FETCH_PRICE_TEST_ENABLED = true;
 var QUARTZY_CART_MAPPING_ENABLED = true;
