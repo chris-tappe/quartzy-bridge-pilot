@@ -2225,7 +2225,8 @@ function onAtcRunClick() {
   const vendorId = atcVendorIdEl ? String(atcVendorIdEl.value || "").trim().toLowerCase() : "";
   const sku = atcSkuEl ? String(atcSkuEl.value || "").trim() : "";
   const qty = atcQtyEl ? String(atcQtyEl.value || "1").trim() || "1" : "1";
-  const method = atcMethodEl ? String(atcMethodEl.value || "api") : "api";
+  /* Mapped API option is hidden; default to Quick Order stuffing. */
+  const method = atcMethodEl ? String(atcMethodEl.value || "bulk") : "bulk";
   if (!vendorId) {
     setAtcStatus("Enter a vendor id (e.g. fisher).", "error");
     return;

@@ -1219,6 +1219,11 @@ const ATV_TOAST_ID = "qc-atv-toast";
 const REQUESTS_PATH_RE = /^\/groups\/[^/]+\/requests(?:\/|$)/i;
 /** Vendors supported by Quick Order cart stuffing (Fisher form; VWR/Sigma file). */
 const ATV_BULK_UPLOAD_VENDORS = { fisher: true, vwr: true, sigma: true };
+/**
+ * When false, "Add to vendor site" skips the method menu and runs Quick Order stuffing
+ * (Fisher form / VWR·Sigma file). Set true to show Mapped cart API again.
+ */
+const ATV_SHOW_MAPPED_API_OPTION = false;
 
 function isAddToVendorSiteEnabled() {
     return typeof QUARTZY_ADD_TO_VENDOR_SITE_ENABLED !== "undefined" && QUARTZY_ADD_TO_VENDOR_SITE_ENABLED === true;
@@ -1567,6 +1572,43 @@ function readCatalogSkuFromCell(catalogRoot) {
 }
 
 /**
+ * Request qty in the list view lives under Total: "1 × Case of 300".
+ * @param {Element} row
+ * @returns {string}
+ */
+function readRequestQtyFromRow(row) {
+    if (!row) return "1";
+    const candidates = [
+        row.querySelector(".column.total .unit-size span.quantity"),
+        row.querySelector(".column.total span.quantity"),
+        row.querySelector(".unit-size span.quantity"),
+        row.querySelector(".column.quantity input"),
+        row.querySelector(".column.quantity"),
+        row.querySelector("span.quantity"),
+        row.querySelector('td[data-column="quantity"]')
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+        const el = candidates[i];
+        if (!el) continue;
+        if (el.tagName === "INPUT") {
+            const v = readInputValue(el);
+            if (v) return v;
+            continue;
+        }
+        const input = el.querySelector && el.querySelector("input");
+        if (input) {
+            const v = readInputValue(input);
+            if (v) return v;
+        }
+        const digits = String(el.textContent || "")
+            .replace(/[^\d.]/g, "")
+            .trim();
+        if (digits) return digits;
+    }
+    return "1";
+}
+
+/**
  * @param {Element} row
  * @returns {{ sku: string, qty: string, vendorName: string, productUrl: string }}
  */
@@ -1580,24 +1622,13 @@ function scrapeTableRow(row) {
         row.querySelector(".column.vendor .catalog-number") ||
         row.querySelector(".catalog-number") ||
         row.querySelector(".column.catalog-number");
-    const qtyEl =
-        row.querySelector(".column.quantity") ||
-        row.querySelector(".quantity") ||
-        row.querySelector('td[data-column="quantity"]');
     const urlEl =
         row.querySelector('[data-analytics-id="order-request.item.product-url"]') ||
         row.querySelector('a[href^="http"]');
 
-    const sku = readCatalogSkuFromCell(catalogEl);
-    let qty = "1";
-    if (qtyEl) {
-        const input = qtyEl.querySelector && qtyEl.querySelector("input");
-        qty = input ? readInputValue(input) : String(qtyEl.textContent || "").replace(/[^\d.]/g, "").trim() || "1";
-    }
-
     return {
-        sku: sku,
-        qty: qty,
+        sku: readCatalogSkuFromCell(catalogEl),
+        qty: readRequestQtyFromRow(row),
         vendorName: vendorEl ? String(vendorEl.textContent || "").trim() : "",
         productUrl: urlEl && urlEl.getAttribute ? String(urlEl.getAttribute("href") || "").trim() : ""
     };
@@ -1718,7 +1749,26 @@ function hideAtvMethodMenu() {
 }
 
 /**
- * Popover: Mapped cart API vs Quick Order cart stuffing.
+ * Run Quick Order stuffing for the given lines (no method picker).
+ * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
+ * @param {{ onBusy?: function(boolean): void }} [opts]
+ */
+function runAddToVendorAutomatic(lines, opts) {
+    opts = opts || {};
+    if (typeof opts.onBusy === "function") opts.onBusy(true);
+    return Promise.resolve(runAddToVendorForLines(lines, "bulk"))
+        .catch(function () {
+            /* run* helpers toast their own errors */
+        })
+        .finally(function () {
+            if (typeof opts.onBusy === "function") opts.onBusy(false);
+        });
+}
+
+/**
+ * Popover: optional Mapped cart API vs Quick Order cart stuffing.
+ * When {@link ATV_SHOW_MAPPED_API_OPTION} is false, callers should use
+ * {@link runAddToVendorAutomatic} instead of opening this menu.
  * @param {HTMLElement} anchorEl
  * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
  * @param {{ onBusy?: function(boolean): void }} [opts]
@@ -1774,14 +1824,17 @@ function showAtvMethodMenu(anchorEl, lines, opts) {
         menu.appendChild(btn);
     }
 
-    addOption(
-        "Mapped cart API",
-        "Uses your saved vendorCartConfigs add_to_cart mapping",
-        false,
-        function () {
-            return runAddToVendorForLines(lines, "api");
-        }
-    );
+    /* Kept for future re-enable via ATV_SHOW_MAPPED_API_OPTION. */
+    if (ATV_SHOW_MAPPED_API_OPTION) {
+        addOption(
+            "Mapped cart API",
+            "Uses your saved vendorCartConfigs add_to_cart mapping",
+            false,
+            function () {
+                return runAddToVendorForLines(lines, "api");
+            }
+        );
+    }
     addOption(
         "Quick Order / line entry",
         bulkOk
@@ -1980,8 +2033,8 @@ async function runAddToVendorForLines(lines, method) {
     if (method === "api") {
         return runAddToVendorViaApi(lines);
     }
-    /* Legacy / direct calls default to mapped API. */
-    return runAddToVendorViaApi(lines);
+    /* Default: Quick Order stuffing (Fisher form / VWR·Sigma file). */
+    return runAddToVendorViaBulkUpload(lines);
 }
 
 function injectIdpAddToVendorButton() {
@@ -2012,24 +2065,31 @@ function injectIdpAddToVendorButton() {
     btn.textContent = "Add to vendor site";
     btn.setAttribute(
         "aria-label",
-        "Add this request’s catalog # to the vendor site (mapped API or Quick Order upload)"
+        "Add this request’s catalog # to the vendor Quick Order form or upload"
     );
-    btn.setAttribute("aria-haspopup", "menu");
+    if (ATV_SHOW_MAPPED_API_OPTION) {
+        btn.setAttribute("aria-haspopup", "menu");
+    }
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
         if (btn.disabled) return;
+        const line = scrapeIdpLine(panel);
+        const busyOpts = {
+            onBusy: function (busy) {
+                btn.disabled = !!busy;
+            }
+        };
+        if (!ATV_SHOW_MAPPED_API_OPTION) {
+            runAddToVendorAutomatic([line], busyOpts);
+            return;
+        }
         const existing = document.getElementById(ATV_METHOD_MENU_ID);
         if (existing && !existing.hidden) {
             hideAtvMethodMenu();
             return;
         }
-        const line = scrapeIdpLine(panel);
-        showAtvMethodMenu(btn, [line], {
-            onBusy: function (busy) {
-                btn.disabled = !!busy;
-            }
-        });
+        showAtvMethodMenu(btn, [line], busyOpts);
     });
 
     const more = menu.querySelector(".more-dropdown");
@@ -2119,27 +2179,37 @@ function injectGroupAddToVendorButton() {
     btn.id = ATV_GROUP_BTN_ID;
     if (sample.btnClass) btn.className = sample.btnClass;
     btn.textContent = "Add to Vendor Site";
-    btn.setAttribute("aria-label", "Add selected requests to vendor sites (mapped API or Quick Order upload)");
-    btn.setAttribute("aria-haspopup", "menu");
+    btn.setAttribute(
+        "aria-label",
+        "Add selected requests to vendor Quick Order forms or uploads"
+    );
+    if (ATV_SHOW_MAPPED_API_OPTION) {
+        btn.setAttribute("aria-haspopup", "menu");
+    }
     btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
         if (btn.disabled) return;
-        const existing = document.getElementById(ATV_METHOD_MENU_ID);
-        if (existing && !existing.hidden) {
-            hideAtvMethodMenu();
-            return;
-        }
         const lines = scrapeSelectedRequestRows();
         if (!lines.length) {
             showAtvToast("Select one or more requests first.", "error");
             return;
         }
-        showAtvMethodMenu(btn, lines, {
+        const busyOpts = {
             onBusy: function (busy) {
                 btn.disabled = !!busy;
             }
-        });
+        };
+        if (!ATV_SHOW_MAPPED_API_OPTION) {
+            runAddToVendorAutomatic(lines, busyOpts);
+            return;
+        }
+        const existing = document.getElementById(ATV_METHOD_MENU_ID);
+        if (existing && !existing.hidden) {
+            hideAtvMethodMenu();
+            return;
+        }
+        showAtvMethodMenu(btn, lines, busyOpts);
     });
     li.appendChild(btn);
 

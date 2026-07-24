@@ -550,9 +550,75 @@
       };
     }
 
+    /**
+     * Write qty via jQuery change/blur — Fisher listens on .js-json-qty.
+     * @param {HTMLInputElement} qtyInput
+     * @param {string} qty
+     */
+    function writeQty(qtyInput, qty) {
+      if (!qtyInput) return;
+      setNativeInputValue(qtyInput, qty);
+      if (typeof window.jQuery === "function") {
+        try {
+          window.jQuery(qtyInput).trigger("blur");
+        } catch (eBlur) {
+          /* ignore */
+        }
+      } else {
+        qtyInput.dispatchEvent(new Event("blur", { bubbles: true }));
+      }
+    }
+
+    /**
+     * Wait until THIS row's product lookup finishes.
+     * Do not use .js-json-item-desc — empty Rapid Order rows already contain that node.
+     * @param {HTMLInputElement} catInput
+     * @param {number} timeoutMs
+     * @returns {Promise<boolean>}
+     */
+    async function waitForCatalogResolved(catInput, timeoutMs) {
+      const tbody = catInput && catInput.closest("tbody");
+      const deadline = Date.now() + (timeoutMs != null ? timeoutMs : 6000);
+      while (Date.now() < deadline) {
+        const hasValid = !!(tbody && tbody.getAttribute("data-hasvalidproduct") === "true");
+        const hasError = catInput.getAttribute("data-haserrors") === "true";
+        if (hasValid || hasError) return hasValid;
+        await sleep(150);
+      }
+      return !!(tbody && tbody.getAttribute("data-hasvalidproduct") === "true");
+    }
+
+    /**
+     * Apply quantities for every filled row. Returns how many still mismatch.
+     * @param {Array<{ row: number, qty: string }>} rows
+     * @returns {number}
+     */
+    function applyAllQuantities(rows) {
+      let mismatches = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = getRowInputs(selectors, rows[i].row);
+        if (!row.qty) {
+          mismatches += 1;
+          continue;
+        }
+        writeQty(row.qty, rows[i].qty);
+        rows[i].qtyWritten = String(row.qty.value || "");
+        if (String(row.qty.value || "").trim() !== String(rows[i].qty)) {
+          mismatches += 1;
+        }
+      }
+      return mismatches;
+    }
+
     const filled = [];
     const failed = [];
-    const rowSettleMs = payload.rowFillDelayMs != null ? payload.rowFillDelayMs : 450;
+    const rowSettleMs = payload.rowFillDelayMs != null ? payload.rowFillDelayMs : 350;
+
+    /*
+     * Phase 1 — catalogs only.
+     * Fisher's product AJAX for row N re-renders earlier rows and wipes their qty
+     * if we write quantities interleaved with catalog lookups.
+     */
     for (let i = 0; i < items.length; i++) {
       const rowNum = i + 1;
       const row = await ensureRow(selectors, rowNum, payload.rowWaitMs || 8000);
@@ -560,19 +626,43 @@
         failed.push({ index: i, catalog: items[i].catalog, reason: "row_missing" });
         continue;
       }
-      /* Catalog change kicks off Fisher's typeahead / product lookup AJAX. */
       setNativeInputValue(row.cat, items[i].catalog);
-      await sleep(Math.min(rowSettleMs, 300));
-      setNativeInputValue(row.qty, items[i].qty);
+      const resolved = await waitForCatalogResolved(row.cat, payload.catalogResolveMs || 6000);
       filled.push({
         index: i,
         row: rowNum,
         catalog: items[i].catalog,
         qty: items[i].qty,
+        resolved: resolved,
+        qtyWritten: "",
         catId: row.cat.id || "",
         qtyId: row.qty.id || ""
       });
       await sleep(rowSettleMs);
+    }
+
+    /* Phase 2 — wait for Fisher’s last product AJAX / default-qty write to finish. */
+    await sleep(payload.qtyRewriteDelayMs != null ? payload.qtyRewriteDelayMs : 900);
+
+    /* Phase 3 — write all quantities, then poll/rewrite until they stick. */
+    applyAllQuantities(filled);
+    const qtyPollMs = payload.qtyPollMs != null ? payload.qtyPollMs : 2500;
+    const qtyPollDeadline = Date.now() + qtyPollMs;
+    while (Date.now() < qtyPollDeadline) {
+      await sleep(350);
+      let needRewrite = false;
+      for (let i = 0; i < filled.length; i++) {
+        const row = getRowInputs(selectors, filled[i].row);
+        const current = row.qty ? String(row.qty.value || "").trim() : "";
+        const want = String(filled[i].qty);
+        /* Fisher often leaves 0/empty after a re-render — treat that as wiped. */
+        if (!row.qty || current !== want || current === "" || current === "0") {
+          needRewrite = true;
+          break;
+        }
+      }
+      if (!needRewrite) break;
+      applyAllQuantities(filled);
     }
 
     const result = {
@@ -596,11 +686,14 @@
     }
 
     if (clickAddToCart) {
-      await sleep(payload.addToCartDelayMs != null ? payload.addToCartDelayMs : 800);
+      /* One last qty pass right before ATC — late Fisher AJAX can still wipe fields. */
+      applyAllQuantities(filled);
+      await sleep(payload.addToCartDelayMs != null ? payload.addToCartDelayMs : 400);
       const atc = queryFirst(selectors.addToCartButton);
       result.addToCartSelector = atc ? describeEl(atc) : null;
       const enabled = await waitForAddToCartEnabled(atc, payload.atcEnableWaitMs || 10000);
       if (enabled) {
+        applyAllQuantities(filled);
         result.addedToCart = clickEl(atc);
       } else {
         result.warning =
