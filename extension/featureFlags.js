@@ -11,9 +11,13 @@
  *   (IDP + Group Actions) using saved vendorCartConfigs.
  *
  * CART_STUFFING_ENABLED — open vendor Quick Order and stuff the cart:
- *   Fisher fills the line-by-line form; VWR / Sigma drop a generated CSV/XLSX.
+ *   Fisher / Bio-Rad fill the line-by-line form; VWR / Sigma drop a generated CSV/XLSX.
+ *
+ * FETCH_COA_ENABLED — inject “Fetch CoA” on Quartzy inventory item instances
+ *   (opens the vendor CoA site by lot #, downloads the PDF, attaches as CoA).
  */
 var QUARTZY_FETCH_PRICE_TEST_ENABLED = true;
 var QUARTZY_CART_MAPPING_ENABLED = true;
 var QUARTZY_ADD_TO_VENDOR_SITE_ENABLED = true;
 var QUARTZY_CART_STUFFING_ENABLED = true;
+var QUARTZY_FETCH_COA_ENABLED = true;

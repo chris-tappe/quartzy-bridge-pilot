@@ -5,6 +5,7 @@
  * - Fisher: Part Number | UOM (optional) | Quantity ordered  → .xlsx (site requires Excel)
  * - VWR:    Catalog Number,UOM,Quantity                     → .csv
  * - Sigma:  SKU,Quantity,Promo Code,Reference Number       → .csv (UTF-8 BOM)
+ * - Bio-Rad: #Catalog Number,Quantity (1 to 999)           → .csv (form fill preferred)
  *
  * Usable from the service worker via importScripts, or any content/page script.
  */
@@ -59,6 +60,13 @@
       aliases: ["sigma", "sigma-aldrich", "sigmaaldrich", "millipore", "milliporesigma"],
       quickOrderUrl: "https://www.sigmaaldrich.com/US/en/quick-order",
       filename: "quick_order_template.csv",
+      mimeType: "text/csv"
+    },
+    biorad: {
+      id: "biorad",
+      aliases: ["biorad", "bio-rad", "bio rad", "bio rad laboratories"],
+      quickOrderUrl: "https://commerce.bio-rad.com/bc/en-us/quick-order",
+      filename: "BioRad_QuickOrder_Upload_Template.csv",
       mimeType: "text/csv"
     }
   };
@@ -223,6 +231,24 @@
   }
 
   /**
+   * Bio-Rad Quick Order bulk upload template.
+   * Prefer Manual entry form fill; CSV is available as a fallback.
+   *
+   * @param {CartItem[]} items
+   * @returns {string}
+   */
+  function generateBioradCsv(items) {
+    const lines = ["#Catalog Number,Quantity (1 to 999),,,"];
+    const list = Array.isArray(items) ? items : [];
+    for (let i = 0; i < list.length; i++) {
+      const sku = itemSku(list[i]);
+      if (!sku) continue;
+      lines.push(csvRow([sku, itemQty(list[i]), "", "", ""]));
+    }
+    return lines.join("\r\n") + (lines.length > 1 ? "\r\n" : "");
+  }
+
+  /**
    * @param {CartItem[]} items
    * @param {string} vendorName
    * @returns {string}
@@ -233,6 +259,7 @@
     if (vendorId === "fisher") return generateFisherCsv(filtered);
     if (vendorId === "vwr") return generateVwrCsv(filtered);
     if (vendorId === "sigma") return generateSigmaCsv(filtered);
+    if (vendorId === "biorad") return generateBioradCsv(filtered);
     throw new Error('Unsupported vendor for cart CSV: "' + vendorName + '"');
   }
 
@@ -536,7 +563,11 @@
     }
 
     const csv =
-      cfg.id === "vwr" ? generateVwrCsv(withSku) : generateSigmaCsv(withSku);
+      cfg.id === "vwr"
+        ? generateVwrCsv(withSku)
+        : cfg.id === "biorad"
+          ? generateBioradCsv(withSku)
+          : generateSigmaCsv(withSku);
     return {
       vendorId: cfg.id,
       quickOrderUrl: cfg.quickOrderUrl,
@@ -557,6 +588,7 @@
     generateFisherCsv: generateFisherCsv,
     generateVwrCsv: generateVwrCsv,
     generateSigmaCsv: generateSigmaCsv,
+    generateBioradCsv: generateBioradCsv,
     generateCartCsv: generateCartCsv,
     generateFisherXlsxBytes: generateFisherXlsxBytes,
     generateCartFile: generateCartFile

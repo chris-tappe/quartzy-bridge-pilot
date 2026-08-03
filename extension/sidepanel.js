@@ -1432,6 +1432,7 @@ function vendorIdFromHost(host) {
   if (!h) return "unknown";
   if (h.indexOf("fishersci") !== -1) return "fisher";
   if (h.indexOf("thermofisher") !== -1) return "thermo";
+  if (h.indexOf("bio-rad") !== -1 || h.indexOf("biorad") !== -1) return "biorad";
   if (h.indexOf("vwr") !== -1 || h.indexOf("avantorsciences") !== -1) return "vwr";
   if (h.indexOf("sigmaaldrich") !== -1 || h.indexOf("milliporesigma") !== -1) return "sigma";
   if (h.indexOf("abcam") !== -1) return "abcam";
@@ -2043,7 +2044,7 @@ function isCartStuffingTestEnabled() {
   );
 }
 
-const ATC_BULK_VENDORS = { fisher: true, vwr: true, sigma: true };
+const ATC_BULK_VENDORS = { fisher: true, biorad: true, vwr: true, sigma: true };
 
 const atcTestSection = document.getElementById("atcTestSection");
 const atcVendorIdEl = document.getElementById("atcVendorId");
@@ -2241,7 +2242,7 @@ function onAtcRunClick() {
       return;
     }
     if (!ATC_BULK_VENDORS[vendorId]) {
-      setAtcStatus("Quick Order stuffing supports fisher, vwr, and sigma only.", "error");
+      setAtcStatus("Quick Order stuffing supports fisher, biorad, vwr, and sigma only.", "error");
       return;
     }
   }
@@ -2250,6 +2251,7 @@ function onAtcRunClick() {
   atcRunBtn.disabled = true;
   renderAtcDebug(null);
 
+  const formVendor = vendorId === "fisher" || vendorId === "biorad";
   const message =
     method === "bulk"
       ? {
@@ -2257,14 +2259,14 @@ function onAtcRunClick() {
           vendorName: vendorId,
           items: [{ catalogNumber: sku, quantity: qty, vendor: vendorId }],
           autoSubmit: true,
-          clickAddToCart: vendorId === "fisher"
+          clickAddToCart: formVendor
         }
       : { type: "ADD_TO_VENDOR_CART", vendorId: vendorId, sku: sku, qty: qty };
 
   setAtcStatus(
     method === "bulk"
-      ? vendorId === "fisher"
-        ? "Opening Fisher Quick Order and filling catalog lines…"
+      ? formVendor
+        ? "Opening " + vendorId + " Quick Order and filling catalog lines…"
         : "Opening Quick Order and attaching CSV/XLS…"
       : "Adding via vendor page (page fetch / click fallback)…",
     "loading"

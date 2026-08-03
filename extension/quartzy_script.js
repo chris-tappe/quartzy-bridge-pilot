@@ -24,13 +24,15 @@ async function initQuartzy() {
 
     const lookupEnabled = isLookupPriceEnabled();
     const atvEnabled = isAddToVendorSiteEnabled();
+    const fetchCoaEnabled = isFetchCoaEnabled();
     console.log("[Quartzy Bridge] Flags", {
         lookupPrice: lookupEnabled,
         addToVendorSite: atvEnabled,
+        fetchCoa: fetchCoaEnabled,
         path: location.pathname
     });
 
-    if (lookupEnabled || atvEnabled) {
+    if (lookupEnabled || atvEnabled || fetchCoaEnabled) {
         watchQuartzyDomAndRoute(function () {
             if (lookupEnabled && isAddRequestPage()) {
                 ensureLookupPriceStyles();
@@ -38,6 +40,9 @@ async function initQuartzy() {
             }
             if (atvEnabled) {
                 scanAndInjectAddToVendorControls();
+            }
+            if (fetchCoaEnabled) {
+                scanAndInjectFetchCoaControls();
             }
         }, 1500);
     }
@@ -56,13 +61,6 @@ async function initQuartzy() {
             true
         );
     }
-}
-
-// Start initialization
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initQuartzy);
-} else {
-    initQuartzy();
 }
 
 function setInputValue(element, value) {
@@ -1217,11 +1215,11 @@ const ATV_GROUP_BTN_ID = "order-request-group-action-add-to-vendor-site";
 const ATV_METHOD_MENU_ID = "qc-atv-method-menu";
 const ATV_TOAST_ID = "qc-atv-toast";
 const REQUESTS_PATH_RE = /^\/groups\/[^/]+\/requests(?:\/|$)/i;
-/** Vendors supported by Quick Order cart stuffing (Fisher form; VWR/Sigma file). */
-const ATV_BULK_UPLOAD_VENDORS = { fisher: true, vwr: true, sigma: true };
+/** Vendors supported by Quick Order cart stuffing (Fisher/Bio-Rad form; VWR/Sigma file). */
+const ATV_BULK_UPLOAD_VENDORS = { fisher: true, biorad: true, vwr: true, sigma: true };
 /**
  * When false, "Add to vendor site" skips the method menu and runs Quick Order stuffing
- * (Fisher form / VWR·Sigma file). Set true to show Mapped cart API again.
+ * (Fisher/Bio-Rad form / VWR·Sigma file). Set true to show Mapped cart API again.
  */
 const ATV_SHOW_MAPPED_API_OPTION = false;
 
@@ -1463,6 +1461,7 @@ function resolveVendorIdFromQuartzy(vendorName, productUrl) {
     const hay = name + " " + url;
     if (/fisher\s*scientific|fishersci/.test(hay)) return "fisher";
     if (/thermo\s*fisher|thermofisher/.test(hay)) return "thermo";
+    if (/bio-?rad/.test(hay)) return "biorad";
     if (/\bvwr\b|avantor/.test(hay)) return "vwr";
     if (/sigma|millipore/.test(hay)) return "sigma";
     if (/abcam/.test(hay)) return "abcam";
@@ -1472,6 +1471,7 @@ function resolveVendorIdFromQuartzy(vendorName, productUrl) {
             const host = new URL(productUrl).hostname.toLowerCase().replace(/^www\./, "");
             if (host.indexOf("fishersci") !== -1) return "fisher";
             if (host.indexOf("thermofisher") !== -1) return "thermo";
+            if (host.indexOf("bio-rad") !== -1 || host.indexOf("biorad") !== -1) return "biorad";
             if (host.indexOf("vwr") !== -1 || host.indexOf("avantor") !== -1) return "vwr";
             if (host.indexOf("sigma") !== -1 || host.indexOf("millipore") !== -1) return "sigma";
             if (host.indexOf("abcam") !== -1) return "abcam";
@@ -1713,9 +1713,9 @@ function sendPushCartToVendor(lines, vendorId) {
         type: "PUSH_CART_TO_VENDOR",
         vendorName: vendorId,
         items: items,
-        /* Fisher form defaults to clicking Add all to Cart; file vendors auto-submit upload only. */
+        /* Form vendors click Add to Cart; file vendors auto-submit upload only. */
         autoSubmit: true,
-        clickAddToCart: vendorId === "fisher" ? true : false
+        clickAddToCart: vendorId === "fisher" || vendorId === "biorad" ? true : false
     });
 }
 
@@ -1838,9 +1838,9 @@ function showAtvMethodMenu(anchorEl, lines, opts) {
     addOption(
         "Quick Order / line entry",
         bulkOk
-            ? "Fisher: fills catalog lines; VWR / Sigma: drops a generated CSV/XLS"
+            ? "Fisher / Bio-Rad: fills catalog lines; VWR / Sigma: drops a generated CSV/XLS"
             : isCartStuffingEnabled()
-              ? "Only Fisher, VWR, and Sigma support Quick Order stuffing right now"
+              ? "Only Fisher, Bio-Rad, VWR, and Sigma support Quick Order stuffing right now"
               : "Cart stuffing is disabled in featureFlags.js",
         !bulkOk,
         function () {
@@ -1937,7 +1937,7 @@ async function runAddToVendorViaApi(lines) {
 }
 
 /**
- * Group lines by vendor and open Quick Order (Fisher form fill or VWR/Sigma file drop).
+ * Group lines by vendor and open Quick Order (Fisher/Bio-Rad form fill or VWR/Sigma file drop).
  * @param {Array<{ sku: string, qty: string, vendorName: string, productUrl: string }>} lines
  */
 async function runAddToVendorViaBulkUpload(lines) {
@@ -1972,7 +1972,7 @@ async function runAddToVendorViaBulkUpload(lines) {
 
     const vendorIds = Object.keys(byVendor);
     if (!vendorIds.length) {
-        showAtvToast(skipped[0] || "No Fisher / VWR / Sigma items to stuff.", "error");
+        showAtvToast(skipped[0] || "No Fisher / Bio-Rad / VWR / Sigma items to stuff.", "error");
         return;
     }
 
@@ -2006,11 +2006,12 @@ async function runAddToVendorViaBulkUpload(lines) {
     }
 
     if (okCount && !errors.length) {
-        const onlyFisher = vendorIds.length === 1 && vendorIds[0] === "fisher";
+        const onlyForm =
+            vendorIds.length === 1 && (vendorIds[0] === "fisher" || vendorIds[0] === "biorad");
         showAtvToast(
             okCount === 1
-                ? onlyFisher
-                    ? "Filled Fisher Quick Order lines and clicked Add all to Cart."
+                ? onlyForm
+                    ? "Filled " + vendorIds[0] + " Quick Order lines and clicked Add to Cart."
                     : "Opened Quick Order and attached the upload file."
                 : "Opened Quick Order for " + okCount + " vendors.",
             "ok"
@@ -2237,3 +2238,579 @@ function scanAndInjectAddToVendorControls() {
     injectGroupAddToVendorButton();
 }
 
+/* —— Fetch CoA (Inventory item instances) —— */
+
+const COA_STYLE_ID = "qc-fetch-coa-style";
+const COA_BTN_CLASS = "qc-fetch-coa-btn";
+/** Vendors with a mapped CoA fetch strategy (extend alongside coaConfig.js). */
+const FETCH_COA_VENDORS = { sigma: true };
+
+function isFetchCoaEnabled() {
+    return typeof QUARTZY_FETCH_COA_ENABLED !== "undefined" && QUARTZY_FETCH_COA_ENABLED === true;
+}
+
+function isInventoryDetailsPage() {
+    try {
+        if (document.getElementById("inventory-details-scroll-container")) return true;
+        if (document.getElementById("instances-card-title")) return true;
+        return /\/groups\/[^/]+\/(inventory-items|inventory|items)\b/i.test(location.pathname);
+    } catch (e) {
+        return false;
+    }
+}
+
+function ensureFetchCoaStyles() {
+    /* Self-contained — do not call ensureAddToVendorStyles() here (TDZ risk if
+       init ever runs before ATV const bindings). Toast id matches ATV_TOAST_ID. */
+    const toastId = "qc-atv-toast";
+    let style = document.getElementById(COA_STYLE_ID);
+    if (!style) {
+        style = document.createElement("style");
+        style.id = COA_STYLE_ID;
+        document.documentElement.appendChild(style);
+    }
+    style.textContent = `
+.${COA_BTN_CLASS} {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.35rem !important;
+  margin: 0 0 0 0.5rem !important;
+  padding: 6px 12px !important;
+  border: 1px solid #f75e2d !important;
+  border-radius: 3px !important;
+  background: #fff !important;
+  color: #f75e2d !important;
+  font-size: 0.875rem !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  line-height: 1.25 !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+}
+.${COA_BTN_CLASS}:hover:not(:disabled) {
+  background: #fff7f3 !important;
+}
+.${COA_BTN_CLASS}:disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+}
+#${toastId} {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483646;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+#${toastId}.is-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+#${toastId}.is-error {
+  background: #7f1d1d;
+}
+#${toastId}.is-ok {
+  background: #14532d;
+}
+`;
+}
+
+/**
+ * @param {Element} root
+ * @param {string} labelText
+ * @returns {string}
+ */
+function readLabeledFieldValue(root, labelText) {
+    const needle = String(labelText || "").toLowerCase();
+    const labels = Array.from((root || document).querySelectorAll("label"));
+    for (let i = 0; i < labels.length; i++) {
+        const t = String(labels[i].textContent || "")
+            .trim()
+            .toLowerCase();
+        if (t !== needle && t.indexOf(needle) === -1) continue;
+        const forId = labels[i].getAttribute("for");
+        if (forId) {
+            const byId = document.getElementById(forId);
+            const v = readInputValue(byId);
+            if (v) return v;
+        }
+        const wrap =
+            labels[i].closest(".qz-input, .qz-select, .item-card-row, [class*='catalog']") ||
+            labels[i].parentElement;
+        if (wrap) {
+            const input = wrap.querySelector("input, textarea");
+            const v = readInputValue(input);
+            if (v) return v;
+            const selected = wrap.querySelector(".ember-power-select-selected-item");
+            if (selected) {
+                const s = String(selected.textContent || "").trim();
+                if (s) return s;
+            }
+        }
+    }
+    return "";
+}
+
+/**
+ * @returns {{ vendorName: string, catalogNumber: string, productUrl: string }}
+ */
+function scrapeInventoryItemContext() {
+    const root =
+        document.getElementById("inventory-details-scroll-container") ||
+        document.querySelector("[id*='inventory-details']") ||
+        document.body;
+
+    let vendorName = readLabeledFieldValue(root, "Vendor");
+    if (!vendorName) {
+        const vendorTrigger = root.querySelector(
+            '[class*="vendor-details"] .ember-power-select-selected-item'
+        );
+        if (vendorTrigger) vendorName = String(vendorTrigger.textContent || "").trim();
+    }
+
+    let catalogNumber = readLabeledFieldValue(root, "Catalog #");
+    if (!catalogNumber) catalogNumber = readLabeledFieldValue(root, "Catalog");
+
+    let productUrl = "";
+    const urlLabel = Array.from(root.querySelectorAll("label")).find(function (l) {
+        return /^URL$/i.test(String(l.textContent || "").trim());
+    });
+    if (urlLabel) {
+        const group = urlLabel.closest("div") || urlLabel.parentElement;
+        const a = group && group.querySelector("a[href^='http']");
+        if (a) productUrl = String(a.getAttribute("href") || "").trim();
+    }
+    if (!productUrl) {
+        const anchors = Array.from(root.querySelectorAll("a[href^='http']"));
+        const productish = anchors.find(function (a) {
+            const h = String(a.getAttribute("href") || "");
+            return /sigmaaldrich|fishersci|vwr\.com|bio-rad|millipore/i.test(h);
+        });
+        if (productish) productUrl = String(productish.getAttribute("href") || "").trim();
+    }
+
+    if (!catalogNumber && productUrl) {
+        try {
+            const path = new URL(productUrl).pathname;
+            let m = path.match(/\/product\/[^/]+\/([^/?#]+)/i);
+            if (!m) m = path.match(/\/catalog\/product\/[^/]+\/([^/?#]+)/i);
+            if (m && m[1]) catalogNumber = decodeURIComponent(m[1]);
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    return {
+        vendorName: vendorName,
+        catalogNumber: catalogNumber,
+        productUrl: productUrl
+    };
+}
+
+/**
+ * Find instance detail blocks that have a Lot # value.
+ * @returns {Array<{ root: Element, actions: Element|null, lotNumber: string }>}
+ */
+function findInventoryInstancesWithLots() {
+    const out = [];
+    const cardTitle = document.getElementById("instances-card-title");
+    const scope =
+        (cardTitle &&
+            (cardTitle.closest("[class*='_card_']") ||
+                cardTitle.closest(".card") ||
+                (cardTitle.parentElement && cardTitle.parentElement.parentElement))) ||
+        document.getElementById("inventory-details-scroll-container") ||
+        document;
+
+    const tables = Array.from(scope.querySelectorAll("table"));
+    for (let i = 0; i < tables.length; i++) {
+        const table = tables[i];
+        const headers = Array.from(table.querySelectorAll("th")).map(function (th) {
+            return String(th.textContent || "").trim().toLowerCase();
+        });
+        const lotIdx = headers.findIndex(function (h) {
+            return h === "lot #" || h === "lot#" || h === "lot" || h.indexOf("lot") === 0;
+        });
+        if (lotIdx < 0) continue;
+
+        const rows = Array.from(table.querySelectorAll("tbody tr"));
+        for (let r = 0; r < rows.length; r++) {
+            const cells = Array.from(rows[r].querySelectorAll("td"));
+            const lotNumber = cells[lotIdx]
+                ? String(cells[lotIdx].textContent || "").trim()
+                : "";
+            if (!lotNumber) continue;
+
+            const root =
+                table.closest("[class*='subitems-details-container']") ||
+                table.closest("[class*='subitem']") ||
+                table.parentElement;
+            let actions = root ? root.querySelector("[class*='subitems-details-actions']") : null;
+            if (!actions && root) {
+                const actionsBtn = Array.from(root.querySelectorAll("button")).find(function (b) {
+                    return /^Actions/i.test(String(b.textContent || "").trim());
+                });
+                if (actionsBtn) {
+                    actions =
+                        actionsBtn.closest("[class*='menu-container']") ||
+                        actionsBtn.closest("[class*='subitems-details-actions']") ||
+                        actionsBtn.parentElement;
+                }
+            }
+
+            out.push({
+                root: root || table,
+                actions: actions || null,
+                lotNumber: lotNumber
+            });
+        }
+    }
+    return out;
+}
+
+/**
+ * @param {string} base64
+ * @param {string} filename
+ * @param {string} mimeType
+ * @returns {File}
+ */
+function base64ToFile(base64, filename, mimeType) {
+    const bin = atob(String(base64 || ""));
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], filename || "CoA.pdf", {
+        type: mimeType || "application/pdf",
+        lastModified: Date.now()
+    });
+}
+
+/**
+ * @param {HTMLInputElement} input
+ * @param {File} file
+ */
+function assignFileToInput(input, file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    try {
+        const proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+        const desc = proto && Object.getOwnPropertyDescriptor(proto, "files");
+        if (desc && typeof desc.set === "function") {
+            desc.set.call(input, dt.files);
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+/**
+ * @param {() => boolean} pred
+ * @param {number} [timeoutMs]
+ * @param {number} [intervalMs]
+ * @returns {Promise<boolean>}
+ */
+function waitForPredicate(pred, timeoutMs, intervalMs) {
+    const start = Date.now();
+    const timeout = timeoutMs || 8000;
+    const interval = intervalMs || 150;
+    return new Promise(function (resolve) {
+        const tick = function () {
+            if (pred()) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - start >= timeout) {
+                resolve(false);
+                return;
+            }
+            setTimeout(tick, interval);
+        };
+        tick();
+    });
+}
+
+/**
+ * Open Quartzy Attach Documents, select CoA, assign file, submit.
+ * @param {{ filename: string, mimeType: string, encoding: string, body: string }} filePayload
+ * @returns {Promise<{ ok: boolean, error?: string, errorMessage?: string }>}
+ */
+async function attachCoaFileToInventory(filePayload) {
+    const file = base64ToFile(
+        filePayload.body,
+        filePayload.filename || "CoA.pdf",
+        filePayload.mimeType || "application/pdf"
+    );
+
+    const uploadBtn = Array.from(document.querySelectorAll("button")).find(function (b) {
+        return /Upload Files/i.test(String(b.textContent || "").trim());
+    });
+    if (!uploadBtn) {
+        return {
+            ok: false,
+            error: "upload_button_not_found",
+            errorMessage: "Could not find the Upload Files control on this inventory item."
+        };
+    }
+    uploadBtn.click();
+
+    const modalReady = await waitForPredicate(function () {
+        const hasTitle = Array.from(document.querySelectorAll("h1,h2,h3,[class*='modal'],[role='dialog']")).some(
+            function (el) {
+                return /Attach Documents/i.test(String(el.textContent || ""));
+            }
+        );
+        return hasTitle || !!document.querySelector('input[type="file"]');
+    }, 8000);
+
+    if (!modalReady) {
+        return {
+            ok: false,
+            error: "modal_not_found",
+            errorMessage: "Attach Documents modal did not open."
+        };
+    }
+
+    /* Select CoA file type. */
+    const coaLabel = Array.from(document.querySelectorAll("label, span, div")).find(function (el) {
+        return /^CoA$/i.test(String(el.textContent || "").trim());
+    });
+    if (coaLabel) {
+        const radio =
+            (coaLabel.getAttribute("for") && document.getElementById(coaLabel.getAttribute("for"))) ||
+            coaLabel.querySelector('input[type="radio"]') ||
+            (coaLabel.previousElementSibling &&
+                coaLabel.previousElementSibling.matches &&
+                coaLabel.previousElementSibling.matches('input[type="radio"]') &&
+                coaLabel.previousElementSibling) ||
+            null;
+        if (radio && typeof radio.click === "function") {
+            radio.click();
+        } else if (typeof coaLabel.click === "function") {
+            coaLabel.click();
+        }
+    } else {
+        const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+        const coaRadio = radios.find(function (r) {
+            const id = String(r.id || "");
+            const val = String(r.value || "");
+            const aria = String(r.getAttribute("aria-label") || "");
+            const lab = r.labels && r.labels[0] ? String(r.labels[0].textContent || "") : "";
+            return /coa/i.test(id + " " + val + " " + aria + " " + lab);
+        });
+        if (coaRadio) coaRadio.click();
+    }
+
+    await new Promise(function (r) {
+        setTimeout(r, 200);
+    });
+
+    let fileInput = document.querySelector(
+        '[role="dialog"] input[type="file"], [class*="modal"] input[type="file"], input[type="file"]'
+    );
+    if (!fileInput) {
+        const uploadDocBtn = Array.from(document.querySelectorAll("button")).find(function (b) {
+            return /Upload Document/i.test(String(b.textContent || "").trim());
+        });
+        if (uploadDocBtn) {
+            /* Reveal hidden file input if needed — still assign via DataTransfer when present. */
+            fileInput =
+                document.querySelector('input[type="file"]') ||
+                (uploadDocBtn.parentElement && uploadDocBtn.parentElement.querySelector('input[type="file"]'));
+        }
+    }
+    if (!fileInput) {
+        return {
+            ok: false,
+            error: "file_input_not_found",
+            errorMessage:
+                "Downloaded the CoA, but could not find the file input in Attach Documents. Save the file manually.",
+            file: file
+        };
+    }
+
+    assignFileToInput(fileInput, file);
+    await new Promise(function (r) {
+        setTimeout(r, 250);
+    });
+
+    const attachBtn = Array.from(document.querySelectorAll("button")).find(function (b) {
+        return /^Attach Documents$/i.test(String(b.textContent || "").trim());
+    });
+    if (attachBtn && !attachBtn.disabled) {
+        attachBtn.click();
+        await waitForPredicate(function () {
+            return !Array.from(document.querySelectorAll("h1,h2,h3")).some(function (el) {
+                return /Attach Documents/i.test(String(el.textContent || ""));
+            });
+        }, 6000);
+        return { ok: true };
+    }
+
+    return {
+        ok: true,
+        error: "attach_unconfirmed",
+        errorMessage: "CoA file was placed in Attach Documents — confirm Attach Documents if needed."
+    };
+}
+
+/**
+ * @param {string} lotNumber
+ * @param {{ vendorName: string, catalogNumber: string, productUrl: string }} ctx
+ * @param {{ onBusy?: (busy: boolean) => void }} [opts]
+ */
+async function runFetchCoaForInstance(lotNumber, ctx, opts) {
+    opts = opts || {};
+    const vendorId = resolveVendorIdFromQuartzy(ctx.vendorName, ctx.productUrl);
+    if (!vendorId || !FETCH_COA_VENDORS[vendorId]) {
+        showAtvToast(
+            vendorId
+                ? 'Fetch CoA is not mapped for "' + (ctx.vendorName || vendorId) + '" yet.'
+                : "Could not determine the vendor for this item.",
+            "error"
+        );
+        return;
+    }
+    if (!lotNumber) {
+        showAtvToast("This item instance needs a lot number before Fetch CoA can run.", "error");
+        return;
+    }
+
+    if (typeof opts.onBusy === "function") opts.onBusy(true);
+    showAtvToast("Fetching CoA for lot " + lotNumber + "…", "");
+
+    try {
+        const result = await sendRuntimeMessage({
+            type: "FETCH_COA",
+            vendorName: vendorId,
+            lotNumber: lotNumber,
+            catalogNumber: ctx.catalogNumber,
+            productUrl: ctx.productUrl,
+            active: true,
+            closeTab: true
+        });
+
+        if (!result || !result.ok || !result.body) {
+            showAtvToast(
+                (result && result.errorMessage) || "Could not fetch the CoA.",
+                "error"
+            );
+            return;
+        }
+
+        showAtvToast("Attaching CoA to this inventory item…", "");
+        const attached = await attachCoaFileToInventory({
+            filename: result.filename || "CoA.pdf",
+            mimeType: result.mimeType || "application/pdf",
+            encoding: result.encoding || "base64",
+            body: result.body
+        });
+
+        if (attached && attached.ok) {
+            showAtvToast(
+                attached.errorMessage ||
+                    "Attached CoA for lot " + lotNumber + (result.filename ? " (" + result.filename + ")" : "") +
+                    ".",
+                attached.error === "attach_unconfirmed" ? "" : "ok"
+            );
+        } else {
+            showAtvToast(
+                (attached && attached.errorMessage) ||
+                    "Downloaded the CoA but could not attach it automatically.",
+                "error"
+            );
+        }
+    } catch (e) {
+        showAtvToast((e && e.message) || "Fetch CoA failed.", "error");
+    } finally {
+        if (typeof opts.onBusy === "function") opts.onBusy(false);
+    }
+}
+
+function injectFetchCoaButtons() {
+    const instances = findInventoryInstancesWithLots();
+    if (!instances.length) return;
+
+    const ctx = scrapeInventoryItemContext();
+    const vendorId = resolveVendorIdFromQuartzy(ctx.vendorName, ctx.productUrl);
+    /* Still inject when vendor unknown — click shows a clear toast. Hide only when mapped-unsupported? Keep visible for supported or unknown. */
+    const vendorSupported = !vendorId || !!FETCH_COA_VENDORS[vendorId];
+
+    for (let i = 0; i < instances.length; i++) {
+        const inst = instances[i];
+        if (!inst.root) continue;
+        if (inst.root.querySelector("." + COA_BTN_CLASS)) continue;
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "qz-button style-secondary size-medium " + COA_BTN_CLASS;
+        btn.textContent = "Fetch CoA";
+        btn.setAttribute(
+            "aria-label",
+            "Fetch Certificate of Analysis for lot " + inst.lotNumber
+        );
+        btn.dataset.qcLot = inst.lotNumber;
+        if (!vendorSupported) {
+            btn.title = "Fetch CoA is not mapped for this vendor yet";
+        }
+
+        btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (btn.disabled) return;
+            const latestCtx = scrapeInventoryItemContext();
+            runFetchCoaForInstance(inst.lotNumber, latestCtx, {
+                onBusy: function (busy) {
+                    btn.disabled = !!busy;
+                    btn.textContent = busy ? "Fetching…" : "Fetch CoA";
+                }
+            });
+        });
+
+        if (inst.actions) {
+            inst.actions.appendChild(btn);
+        } else {
+            const actionsBtn = Array.from(inst.root.querySelectorAll("button")).find(function (b) {
+                return /^Actions/i.test(String(b.textContent || "").trim());
+            });
+            if (actionsBtn && actionsBtn.parentElement) {
+                actionsBtn.parentElement.appendChild(btn);
+            } else {
+                inst.root.appendChild(btn);
+            }
+        }
+    }
+    if (instances.length) {
+        console.log("[Quartzy Bridge] Fetch CoA mounted for", instances.length, "instance(s)");
+    }
+}
+
+function scanAndInjectFetchCoaControls() {
+    if (!isFetchCoaEnabled() || !isInventoryDetailsPage()) return;
+    ensureFetchCoaStyles();
+    injectFetchCoaButtons();
+}
+
+/* Boot after all const/let bindings above are initialized (avoids TDZ crashes). */
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initQuartzy);
+} else {
+    initQuartzy();
+}

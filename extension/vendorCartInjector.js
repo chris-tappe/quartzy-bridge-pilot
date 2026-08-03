@@ -3,8 +3,9 @@
  *
  * Strategies:
  * - file (default for VWR / Sigma): assign a generated CSV/XLSX to <input type="file">
- * - form (default for Fisher): fill Rapid Order line rows
- *     #qa_catNumber_{0..} / #qa_item_qty_input_{0..} (Gemini's #catalogNumberN is wrong)
+ * - form (default for Fisher / Bio-Rad): fill Quick Order line rows
+ *     Fisher:  #qa_catNumber_{0..} / #qa_item_qty_input_{0..}
+ *     Bio-Rad: #row_{0..}_sku / #row_{0..}_quantity (+ "Add more fields")
  *
  * Message: { type: "QUARTZY_CART_STUFF", payload: CartStuffPayload }
  */
@@ -128,6 +129,38 @@
         'button[data-testid*="add-to-cart" i]',
         'button[class*="addToCart" i]'
       ]
+    },
+    biorad: {
+      fileInput: [
+        'input#upload_csv[type="file"]',
+        'input[type="file"][accept*=".csv"]',
+        'input[type="file"]'
+      ],
+      dropzone: [".silk-upload", '[class*="upload" i]'],
+      submitButton: [
+        '.silk-tabs-tabpane-active button.silk-btn-primary',
+        'button.silk-btn-primary:has-text("Add items to cart")',
+        'button:has-text("Add items to cart")'
+      ],
+      addToCartButton: [
+        '.silk-tabs-tabpane-active form.silk-form button.silk-btn-primary[type="submit"]',
+        '.silk-tabs-tabpane-active button.silk-btn-primary',
+        'button.silk-btn-primary:has-text("Add items to cart")',
+        'button:has-text("Add items to cart")'
+      ],
+      addRowsButton: [
+        "button.add-more-btn",
+        'button:has-text("Add more fields")',
+        'a:has-text("Add more fields")'
+      ],
+      lineEntryTab: [
+        '#rc-tabs-0-tab-4',
+        '[role="tab"]:has-text("Manual entry")',
+        '.silk-tabs-tab-btn:has-text("Manual entry")'
+      ],
+      /* 0-based templates: row_0_sku / row_0_quantity */
+      catalogIdTemplate: "row_{i}_sku",
+      quantityIdTemplate: "row_{i}_quantity"
     }
   };
 
@@ -360,7 +393,21 @@
   }
 
   /**
+   * Resolve a row field id from template (`row_{i}_sku`) or prefix (`qa_catNumber_`).
+   * @param {string|null|undefined} template
+   * @param {string|null|undefined} prefix
+   * @param {number} idx 0-based
+   * @returns {string}
+   */
+  function resolveRowFieldId(template, prefix, idx) {
+    if (template) return String(template).replace(/\{i\}/g, String(idx));
+    if (prefix) return String(prefix) + idx;
+    return "";
+  }
+
+  /**
    * Fisher Rapid Order uses 0-based ids: qa_catNumber_0 / qa_item_qty_input_0.
+   * Bio-Rad Manual entry uses row_{i}_sku / row_{i}_quantity.
    * Keep Gemini-style #catalogNumberN as a fallback.
    * @param {object} selectors
    * @param {number} rowNum 1-based
@@ -368,14 +415,24 @@
    */
   function getRowInputs(selectors, rowNum) {
     const idx = rowNum - 1;
-    const catPrefix = String((selectors && selectors.catalogIdPrefix) || "qa_catNumber_");
-    const qtyPrefix = String((selectors && selectors.quantityIdPrefix) || "qa_item_qty_input_");
+    const catId = resolveRowFieldId(
+      selectors && selectors.catalogIdTemplate,
+      (selectors && selectors.catalogIdPrefix) || "qa_catNumber_",
+      idx
+    );
+    const qtyId = resolveRowFieldId(
+      selectors && selectors.quantityIdTemplate,
+      (selectors && selectors.quantityIdPrefix) || "qa_item_qty_input_",
+      idx
+    );
 
     let cat =
-      asTextInput(document.getElementById(catPrefix + idx)) ||
+      asTextInput(document.getElementById(catId)) ||
+      asTextInput(document.getElementById("row_" + idx + "_sku")) ||
       asTextInput(document.getElementById("catalogNumber" + rowNum));
     let qty =
-      asTextInput(document.getElementById(qtyPrefix + idx)) ||
+      asTextInput(document.getElementById(qtyId)) ||
+      asTextInput(document.getElementById("row_" + idx + "_quantity")) ||
       asTextInput(document.getElementById("quantity" + rowNum));
 
     /* Name-based fallback: all catalog inputs share name=shoppingCartCatNum */
@@ -425,13 +482,21 @@
    */
   function diagnoseFormFields() {
     const cats = Array.prototype.slice
-      .call(document.querySelectorAll('input[name="shoppingCartCatNum"], input[id^="qa_catNumber_"], input.roTextField--typeahead'))
+      .call(
+        document.querySelectorAll(
+          'input[name="shoppingCartCatNum"], input[id^="qa_catNumber_"], input[id^="row_"][id$="_sku"], input.roTextField--typeahead'
+        )
+      )
       .slice(0, 8)
       .map(function (el) {
         return { id: el.id || "", name: el.getAttribute("name") || "", className: String(el.className || "").slice(0, 80) };
       });
     const qtys = Array.prototype.slice
-      .call(document.querySelectorAll('input[name="shoppingCartQty"], input[id^="qa_item_qty_input_"], input.roTextField--qty'))
+      .call(
+        document.querySelectorAll(
+          'input[name="shoppingCartQty"], input[id^="qa_item_qty_input_"], input[id^="row_"][id$="_quantity"], input.roTextField--qty'
+        )
+      )
       .slice(0, 8)
       .map(function (el) {
         return { id: el.id || "", name: el.getAttribute("name") || "" };
@@ -439,9 +504,12 @@
     return {
       url: location.href,
       hasQaCat0: !!document.getElementById("qa_catNumber_0"),
+      hasRow0Sku: !!document.getElementById("row_0_sku"),
       hasCatalogNumber1: !!document.getElementById("catalogNumber1"),
       hasRoAddRows: !!document.getElementById("ro_addrows"),
+      hasAddMoreFields: !!document.querySelector("button.add-more-btn"),
       hasAddCart: !!document.getElementById("rapid_order_add_cart"),
+      hasManualEntryTab: !!document.querySelector('[role="tab"]'),
       cats: cats,
       qtys: qtys
     };
@@ -493,7 +561,25 @@
   }
 
   /**
-   * Fisher Rapid Order line-by-line form fill.
+   * Whether a configured line-entry tab is already the active one.
+   * @param {Element|null} tab
+   * @returns {boolean}
+   */
+  function isLineEntryTabActive(tab) {
+    if (!tab) return false;
+    if (tab.getAttribute("aria-selected") === "true") return true;
+    if (tab.classList.contains("active") || tab.classList.contains("silk-tabs-tab-active")) return true;
+    const parent = tab.closest(".silk-tabs-tab, [role='tab'], .active, .selected");
+    return !!(
+      parent &&
+      (parent.classList.contains("silk-tabs-tab-active") ||
+        parent.classList.contains("active") ||
+        parent.getAttribute("aria-selected") === "true")
+    );
+  }
+
+  /**
+   * Fisher / Bio-Rad Quick Order line-by-line form fill.
    * @param {object} payload
    * @returns {Promise<object>}
    */
@@ -514,28 +600,32 @@
       };
     }
 
-    /* If the page is on Copy/Paste or bulk UI, try switching to Line by Line first. */
+    /*
+     * Switch to Manual entry / Line by Line when configured.
+     * Bio-Rad keeps Manual entry fields in a hidden tab pane — always activate
+     * that tab before filling so React state + ATC target the visible form.
+     */
+    const tab = queryFirst(selectors.lineEntryTab);
+    if (tab && !isLineEntryTabActive(tab)) {
+      clickEl(tab);
+      await sleep(500);
+    }
+
     let first = getRowInputs(selectors, 1);
     if (!first.cat) {
-      const tab = queryFirst(selectors.lineEntryTab);
-      if (tab) {
-        clickEl(tab);
-        await sleep(400);
-      }
+      await waitFor(
+        [
+          "#qa_catNumber_0",
+          "#row_0_sku",
+          'input[name="shoppingCartCatNum"]',
+          "input.roTextField--typeahead",
+          'input.silk-select-selection-search-input[id$="_sku"]',
+          "#catalogNumber1",
+          'input[id^="catalogNumber"]'
+        ],
+        payload.waitMs || 12000
+      );
       first = getRowInputs(selectors, 1);
-      if (!first.cat) {
-        await waitFor(
-          [
-            "#qa_catNumber_0",
-            'input[name="shoppingCartCatNum"]',
-            "input.roTextField--typeahead",
-            "#catalogNumber1",
-            'input[id^="catalogNumber"]'
-          ],
-          payload.waitMs || 12000
-        );
-        first = getRowInputs(selectors, 1);
-      }
     }
 
     if (!first.cat) {
@@ -543,7 +633,7 @@
         ok: false,
         error: "form_row_not_found",
         errorMessage:
-          "Could not find Fisher Quick Order catalog fields (#qa_catNumber_0). Pass payload.selectors to override.",
+          "Could not find Quick Order catalog fields (#qa_catNumber_0 or #row_0_sku). Pass payload.selectors to override.",
         vendorId: vendorId,
         url: location.href,
         diagnose: diagnoseFormFields()
@@ -557,7 +647,13 @@
      */
     function writeQty(qtyInput, qty) {
       if (!qtyInput) return;
-      setNativeInputValue(qtyInput, qty);
+      let q = String(qty);
+      /* Bio-Rad Manual entry caps qty at 3 digits (1–999). */
+      const maxLen = Number(qtyInput.getAttribute("maxlength"));
+      if (Number.isFinite(maxLen) && maxLen > 0 && q.length > maxLen) {
+        q = q.slice(0, maxLen);
+      }
+      setNativeInputValue(qtyInput, q);
       if (typeof window.jQuery === "function") {
         try {
           window.jQuery(qtyInput).trigger("blur");
@@ -571,20 +667,29 @@
 
     /**
      * Wait until THIS row's product lookup finishes.
-     * Do not use .js-json-item-desc — empty Rapid Order rows already contain that node.
+     * Fisher: tbody[data-hasvalidproduct]. Bio-Rad: silk-select-loading clears.
      * @param {HTMLInputElement} catInput
      * @param {number} timeoutMs
      * @returns {Promise<boolean>}
      */
     async function waitForCatalogResolved(catInput, timeoutMs) {
       const tbody = catInput && catInput.closest("tbody");
+      const selectRoot = catInput && catInput.closest(".silk-select");
       const deadline = Date.now() + (timeoutMs != null ? timeoutMs : 6000);
+      let sawLoading = false;
       while (Date.now() < deadline) {
         const hasValid = !!(tbody && tbody.getAttribute("data-hasvalidproduct") === "true");
         const hasError = catInput.getAttribute("data-haserrors") === "true";
         if (hasValid || hasError) return hasValid;
+        if (selectRoot && String(catInput.value || "").trim()) {
+          const loading = selectRoot.classList.contains("silk-select-loading");
+          if (loading) sawLoading = true;
+          else if (sawLoading) return true; /* autocomplete search finished */
+        }
         await sleep(150);
       }
+      /* Bio-Rad accepts free-text catalog values without a validity flag. */
+      if (selectRoot && String(catInput.value || "").trim()) return true;
       return !!(tbody && tbody.getAttribute("data-hasvalidproduct") === "true");
     }
 
@@ -697,7 +802,7 @@
         result.addedToCart = clickEl(atc);
       } else {
         result.warning =
-          "Rows filled, but Add all to Cart stayed disabled (product lookup may still be running, or sign-in / match selection required).";
+          "Rows filled, but Add to Cart stayed disabled (product lookup may still be running, or sign-in / match selection required).";
       }
     }
 
