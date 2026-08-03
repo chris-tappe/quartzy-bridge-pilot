@@ -1384,6 +1384,263 @@ function onFetchPriceClick() {
 
 initFetchPriceUi();
 
+/* —— LLM a11y extraction prototype (gated by QUARTZY_LLM_A11Y_EXTRACT_ENABLED) —— */
+const LLM_A11Y_API_KEY_STORAGE = "geminiApiKey";
+const llmA11yStandalone = document.getElementById("llmA11yStandalone");
+const llmA11yApiKeyEl = document.getElementById("llmA11yApiKey");
+const llmA11yCheckBtn = document.getElementById("llmA11yCheckBtn");
+const llmA11yCopyTreeBtn = document.getElementById("llmA11yCopyTreeBtn");
+const llmA11yCopiedLabel = document.getElementById("llmA11yCopiedLabel");
+const llmA11yStatus = document.getElementById("llmA11yStatus");
+const llmA11yJsonWrap = document.getElementById("llmA11yJsonWrap");
+const llmA11yJsonOutput = document.getElementById("json-output");
+let llmA11yInFlight = false;
+let llmA11yCopyInFlight = false;
+let llmA11ySaveTimer = null;
+let llmA11yCopiedTimer = null;
+
+function isLlmA11yExtractEnabled() {
+  return (
+    typeof QUARTZY_LLM_A11Y_EXTRACT_ENABLED !== "undefined" &&
+    QUARTZY_LLM_A11Y_EXTRACT_ENABLED === true
+  );
+}
+
+/**
+ * @param {string} text
+ * @param {"loading"|"error"|"warn"|""} [kind]
+ */
+function setLlmA11yStatus(text, kind) {
+  if (!llmA11yStatus) return;
+  const t = text != null ? String(text) : "";
+  if (!t) {
+    llmA11yStatus.hidden = true;
+    llmA11yStatus.textContent = "";
+    llmA11yStatus.classList.remove("is-error", "is-warn", "is-loading");
+    return;
+  }
+  llmA11yStatus.hidden = false;
+  llmA11yStatus.classList.remove("is-error", "is-warn", "is-loading");
+  if (kind === "error") llmA11yStatus.classList.add("is-error");
+  else if (kind === "warn") llmA11yStatus.classList.add("is-warn");
+  else if (kind === "loading") llmA11yStatus.classList.add("is-loading");
+  if (kind === "loading") {
+    llmA11yStatus.innerHTML =
+      '<span class="llm-a11y-spinner" aria-hidden="true"></span>' + escapeHtml(t);
+  } else {
+    llmA11yStatus.textContent = t;
+  }
+}
+
+/**
+ * @param {unknown} data
+ */
+function setLlmA11yJson(data) {
+  if (!llmA11yJsonOutput || !llmA11yJsonWrap) return;
+  if (data == null) {
+    llmA11yJsonOutput.textContent = "";
+    llmA11yJsonWrap.hidden = true;
+    return;
+  }
+  try {
+    llmA11yJsonOutput.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    llmA11yJsonOutput.textContent = String(data);
+  }
+  llmA11yJsonWrap.hidden = false;
+}
+
+function persistLlmA11yApiKey() {
+  if (!llmA11yApiKeyEl) return;
+  const key = String(llmA11yApiKeyEl.value || "");
+  chrome.storage.local.set({ [LLM_A11Y_API_KEY_STORAGE]: key });
+}
+
+function loadLlmA11yApiKey() {
+  if (!llmA11yApiKeyEl) return;
+  chrome.storage.local.get([LLM_A11Y_API_KEY_STORAGE], function (items) {
+    const v = items && items[LLM_A11Y_API_KEY_STORAGE];
+    if (typeof v === "string" && v) {
+      llmA11yApiKeyEl.value = v;
+    }
+  });
+}
+
+function showLlmA11yCopiedLabel() {
+  if (!llmA11yCopiedLabel) return;
+  llmA11yCopiedLabel.hidden = false;
+  llmA11yCopiedLabel.classList.add("is-visible");
+  if (llmA11yCopiedTimer) clearTimeout(llmA11yCopiedTimer);
+  llmA11yCopiedTimer = setTimeout(function () {
+    llmA11yCopiedLabel.classList.remove("is-visible");
+    llmA11yCopiedLabel.hidden = true;
+  }, 1800);
+}
+
+/**
+ * @param {string} text
+ * @returns {Promise<void>}
+ */
+function copyTextToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise(function (resolve, reject) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) resolve();
+      else reject(new Error("copy_failed"));
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function onLlmA11yCheckClick() {
+  if (llmA11yInFlight || !llmA11yCheckBtn) return;
+  const apiKey = llmA11yApiKeyEl ? String(llmA11yApiKeyEl.value || "").trim() : "";
+  if (!apiKey) {
+    setLlmA11yStatus("Enter a Gemini API key first.", "error");
+    return;
+  }
+  persistLlmA11yApiKey();
+  getActiveTabKey(function (tabId, tab) {
+    if (tabId == null) {
+      setLlmA11yStatus("No active tab found.", "error");
+      return;
+    }
+    const url = tab && tab.url ? String(tab.url) : "";
+    if (!url || /^(chrome|chrome-extension|edge|about|devtools):/i.test(url)) {
+      setLlmA11yStatus("Switch to a normal website tab first.", "error");
+      return;
+    }
+
+    llmA11yInFlight = true;
+    llmA11yCheckBtn.disabled = true;
+    if (llmA11yCopyTreeBtn) llmA11yCopyTreeBtn.disabled = true;
+    setLlmA11yJson(null);
+    setLlmA11yStatus("Reading accessibility tree and calling Gemini…", "loading");
+
+    chrome.runtime.sendMessage(
+      { type: "CHECK_LLM_DATA", tabId: tabId, apiKey: apiKey },
+      function (response) {
+        llmA11yInFlight = false;
+        llmA11yCheckBtn.disabled = false;
+        if (llmA11yCopyTreeBtn) llmA11yCopyTreeBtn.disabled = false;
+        if (chrome.runtime.lastError) {
+          setLlmA11yStatus(chrome.runtime.lastError.message || "Message failed.", "error");
+          return;
+        }
+        if (!response || !response.ok) {
+          setLlmA11yStatus(
+            (response && response.errorMessage) ||
+              (response && response.error) ||
+              "Extraction failed.",
+            "error"
+          );
+          return;
+        }
+        const products = Array.isArray(response.products) ? response.products : [];
+        setLlmA11yJson(products);
+        const src = response.source ? " via " + response.source : "";
+        setLlmA11yStatus(
+          "Extracted " + products.length + " product(s)" + src + ".",
+          ""
+        );
+      }
+    );
+  });
+}
+
+function onLlmA11yCopyTreeClick() {
+  if (llmA11yCopyInFlight || !llmA11yCopyTreeBtn) return;
+  getActiveTabKey(function (tabId, tab) {
+    if (tabId == null) {
+      setLlmA11yStatus("No active tab found.", "error");
+      return;
+    }
+    const url = tab && tab.url ? String(tab.url) : "";
+    if (!url || /^(chrome|chrome-extension|edge|about|devtools):/i.test(url)) {
+      setLlmA11yStatus("Switch to a normal website tab first.", "error");
+      return;
+    }
+
+    llmA11yCopyInFlight = true;
+    llmA11yCopyTreeBtn.disabled = true;
+    setLlmA11yStatus("Reading accessibility tree…", "loading");
+
+    chrome.runtime.sendMessage({ type: "GET_A11Y_TREE", tabId: tabId }, function (response) {
+      llmA11yCopyInFlight = false;
+      llmA11yCopyTreeBtn.disabled = false;
+      if (chrome.runtime.lastError) {
+        setLlmA11yStatus(chrome.runtime.lastError.message || "Message failed.", "error");
+        return;
+      }
+      if (!response || !response.ok || !response.summary) {
+        setLlmA11yStatus(
+          (response && response.errorMessage) ||
+            (response && response.error) ||
+            "Could not extract a11y tree.",
+          "error"
+        );
+        return;
+      }
+
+      const summary = String(response.summary);
+      console.log("[Quartzy Connect] A11y tree summary (" + (response.source || "?") + "):\n" + summary);
+
+      copyTextToClipboard(summary)
+        .then(function () {
+          showLlmA11yCopiedLabel();
+          const src = response.source ? " via " + response.source : "";
+          setLlmA11yStatus(
+            "Copied a11y tree (" + summary.length + " chars)" + src + ".",
+            ""
+          );
+        })
+        .catch(function (e) {
+          setLlmA11yStatus(
+            "Extracted tree but clipboard copy failed: " + ((e && e.message) || "unknown"),
+            "error"
+          );
+        });
+    });
+  });
+}
+
+function initLlmA11yUi() {
+  if (!llmA11yStandalone) return;
+  if (!isLlmA11yExtractEnabled()) {
+    llmA11yStandalone.hidden = true;
+    return;
+  }
+  llmA11yStandalone.hidden = false;
+  loadLlmA11yApiKey();
+  if (llmA11yApiKeyEl) {
+    llmA11yApiKeyEl.addEventListener("input", function () {
+      if (llmA11ySaveTimer) clearTimeout(llmA11ySaveTimer);
+      llmA11ySaveTimer = setTimeout(persistLlmA11yApiKey, 300);
+    });
+    llmA11yApiKeyEl.addEventListener("change", persistLlmA11yApiKey);
+  }
+  if (llmA11yCheckBtn) {
+    llmA11yCheckBtn.addEventListener("click", onLlmA11yCheckClick);
+  }
+  if (llmA11yCopyTreeBtn) {
+    llmA11yCopyTreeBtn.addEventListener("click", onLlmA11yCopyTreeClick);
+  }
+}
+
+initLlmA11yUi();
+
 /* —— Cart API mapping mode (gated by QUARTZY_CART_MAPPING_ENABLED) —— */
 const CART_CONFIGS_KEY = "vendorCartConfigs";
 const cartMapStandalone = document.getElementById("cartMapStandalone");

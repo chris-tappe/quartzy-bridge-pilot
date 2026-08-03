@@ -6,10 +6,12 @@
   "permissions": [
     "sidePanel",
     "storage",
+    "activeTab",
     "tabs",
     "cookies",
     "scripting"
   ],
+  "automation": true,
   "host_permissions": [
     "<all_urls>"
   ],

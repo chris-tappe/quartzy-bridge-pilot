@@ -16,6 +16,12 @@ try {
   console.error("[Quartzy Connect] coaConfig import failed:", e);
 }
 
+try {
+  importScripts("A11yLlmExtraction.js");
+} catch (e) {
+  console.error("[Quartzy Connect] A11yLlmExtraction import failed:", e);
+}
+
 // Open side panel when the user clicks the extension icon (Manifest V3 sidePanel + action).
 try {
   chrome.sidePanel
@@ -43,6 +49,11 @@ const CART_STUFFING_ENABLED =
 /** Inventory Fetch CoA (vendor documents search → PDF → attach on Quartzy). */
 const FETCH_COA_ENABLED =
   typeof QUARTZY_FETCH_COA_ENABLED !== "undefined" && QUARTZY_FETCH_COA_ENABLED === true;
+
+/** Side-panel a11y → Gemini product extraction prototype. */
+const LLM_A11Y_EXTRACT_ENABLED =
+  typeof QUARTZY_LLM_A11Y_EXTRACT_ENABLED !== "undefined" &&
+  QUARTZY_LLM_A11Y_EXTRACT_ENABLED === true;
 
 const FETCH_COA_TAB_TIMEOUT_MS = 45000;
 const FETCH_COA_PDF_TIMEOUT_MS = 30000;
@@ -2576,6 +2587,77 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           loginState: "unknown",
           mode: "single",
           variants: []
+        });
+      });
+    return true;
+  }
+
+  if (message.type === "GET_A11Y_TREE" || message.type === "CHECK_LLM_DATA") {
+    if (!LLM_A11Y_EXTRACT_ENABLED) {
+      sendResponse({
+        ok: false,
+        error: "feature_disabled",
+        errorMessage: "LLM a11y extraction prototype is disabled."
+      });
+      return;
+    }
+    const mod =
+      typeof QuartzyA11yLlmExtraction !== "undefined" && QuartzyA11yLlmExtraction
+        ? QuartzyA11yLlmExtraction
+        : null;
+    if (!mod) {
+      sendResponse({
+        ok: false,
+        error: "module_missing",
+        errorMessage: "A11y LLM extraction module failed to load."
+      });
+      return;
+    }
+
+    if (message.type === "GET_A11Y_TREE") {
+      const getSummary =
+        typeof mod.getA11ySummaryForTab === "function" ? mod.getA11ySummaryForTab : null;
+      if (!getSummary) {
+        sendResponse({
+          ok: false,
+          error: "module_missing",
+          errorMessage: "A11y summary helper failed to load."
+        });
+        return;
+      }
+      getSummary({ tabId: message.tabId })
+        .then(function (result) {
+          sendResponse(result);
+        })
+        .catch(function (e) {
+          sendResponse({
+            ok: false,
+            error: "unexpected",
+            errorMessage: (e && e.message) || "Unexpected error."
+          });
+        });
+      return true;
+    }
+
+    const run =
+      typeof mod.runA11yLlmExtraction === "function" ? mod.runA11yLlmExtraction : null;
+    if (!run) {
+      sendResponse({
+        ok: false,
+        error: "module_missing",
+        errorMessage: "A11y LLM extraction module failed to load."
+      });
+      return;
+    }
+    run({ tabId: message.tabId, apiKey: message.apiKey })
+      .then(function (result) {
+        sendResponse(result);
+      })
+      .catch(function (e) {
+        sendResponse({
+          ok: false,
+          error: "unexpected",
+          errorMessage: (e && e.message) || "Unexpected error."
         });
       });
     return true;
